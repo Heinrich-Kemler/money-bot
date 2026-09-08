@@ -1,6 +1,6 @@
 # Money Bot
 
-> **Not production.** First testable Approve is **local HMAC-signed browser Approve**, not passkey/WebAuthn. Do not use this Worker to move real money. The shopping agent cannot Approve or mark `PAID`.
+> **Not production.** First testable Approve is **local HMAC-signed browser Approve**, not passkey/WebAuthn. Do not use this Worker to move real money. The agent has **no decide MCP tool** and cannot mark `PAID`. `approveUrl` is a **bearer capability** for this local first test: whoever possesses the URL (human, agent, or smoke script) can complete Approve/Deny by fetching/posting it. That does **not** prove a human acted.
 
 Public Cursor marketplace plugin so an agent can request human approval for a **UK/EU** online checkout without putting card numbers in the model.
 
@@ -28,6 +28,8 @@ There is **no** `edit_spend_cap`, `report_checkout_outcome`, or `dev_set_spend_d
 
 This is a **browser page** that posts a **server-minted** HS256 JWT / HMAC assertion to `POST /host/spend-decision`. It is **not** passkey/WebAuthn and **not** a real card charge.
 
+`approveUrl` is a **bearer capability** for this local first test only. Possession of the URL — including by the agent or `./scripts/smoke-approve.sh` — is enough to complete Approve or Deny (GET the page, POST the minted assertion). That is acceptable for local first test. **TODO:** true human proof (passkey/WebAuthn / out-of-band device auth). Do not claim Approve proves a human today.
+
 1. Copy env and start wrangler:
 
    ```bash
@@ -42,7 +44,7 @@ This is a **browser page** that posts a **server-minted** HS256 JWT / HMAC asser
 
 3. Call `request_spend` for a fake UK/EU merchant (GBP + allowlisted domain + `https` `checkoutUrl` on that host).
 
-4. Open the returned `approveUrl` in a **browser**. The agent must not complete Approve.
+4. Open the returned `approveUrl` in a **browser** (or let the smoke script fetch/post it — same bearer URL).
 
 5. Click **Approve**. Spend becomes `APPROVED` with a locked-cart re-snapshot.
 
@@ -85,7 +87,7 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 | `get_spend_status` | Full status + `tenantConnection` |
 | Host/OOB checkout outcome — **not an agent tool, HTTP 501** | `WAITING_FOR_YOU` → `PAID` / `CHALLENGE` / `FAILED` |
 
-A chat control may only **initiate** Approve (`approveUrl`). The **agent must never press Approve**.
+Tool results return `approveUrl` so a human *or* a local smoke client can finish Approve. That URL is a bearer capability, not human proof. The agent still has **no decide MCP tool**.
 
 `checkoutUrl` is the **money path**. It is locked to `merchantDomain` at request time, re-validated at Approve, and the only URL handoff will open. Never fall back to `merchantUrl`. A cart mismatch opens a **new PENDING** and **cancels** the previous `APPROVED` lock (`FAILED` + `supersededBySpendRequestId`).
 
@@ -102,7 +104,7 @@ If a `spendCap` is set, it must be **≥ amount**.
 | Who pays | Human, on the merchant’s own checkout page | Planned: human-approved virtual card from **their** Revolut Business — never a pooled float |
 | Revolut | Not connected | Planned wizard (cert + `client_id` + JWT + Enable access). **No public OAuth.** Token ~40m; **~90-day re-consent** |
 | What the agent sees | Spend id, amount, merchant, locked checkout URL, `approveUrl`, state | Same — never PAN/CVC/expiry |
-| Approve | Local HMAC-signed browser page (not passkey yet) | Planned phone passkey / PWA |
+| Approve | Local HMAC `approveUrl` (bearer capability; not human proof) | **TODO** phone passkey / WebAuthn |
 | Card data | v0 does not fetch or store PAN. That is a **design goal**, not a QSA “out of CDE” certification. | Any future PAN fetch would need a PCI program (likely SAQ D unless a vault/iframe). Not assessed. |
 
 Money Bot does not implement Apple Pay, Revolut Pay, or 3-D Secure. Those, if they appear, are the **merchant page’s** UI after the human opens the locked URL.
@@ -119,7 +121,7 @@ Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must
 
 1. Fill the merchant cart (amount, merchant URL/domain, shipping, **checkout URL**).
 2. `request_spend` → `{ status: "PENDING", spendRequestId, lockedCart, approveUrl, … }`.
-3. Tell the human to open `approveUrl` in a browser. **Do not click Approve yourself.**
+3. Give the human `approveUrl` (intended browser path). Treat it as a bearer capability: fetching/posting it completes Approve/Deny. The agent has no decide tool; this still does **not** prove a human clicked.
 4. `get_spend_status` until `APPROVED`, `DENIED`, `EXPIRED`, or `REAUTH_REQUIRED`.
 5. `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Hand the human the locked `checkoutUrl` only. Never show a raw PAN. Do **not** mark `PAID`.
 
@@ -127,7 +129,7 @@ Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must
 
 See [SECURITY.md](SECURITY.md):
 
-1. Human OOB approval every spend (`AUTO_APPROVE_MAX = 0`). Agent cannot Approve. No decide tool.
+1. `AUTO_APPROVE_MAX = 0`. No decide MCP tool. Local `approveUrl` is a bearer capability (not human proof; passkey/WebAuthn remains TODO).
 2. `POST /host/spend-decision` verifies a signed JWT/HMAC (`iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, `lockedCartFingerprint`) and calls `applyDecision` only with `assertionVerified: true`.
 3. Never put PAN/CVC/expiry in chat, memory, transcripts, or tool results.
 4. No public Revolut OAuth. No pooled funds.
