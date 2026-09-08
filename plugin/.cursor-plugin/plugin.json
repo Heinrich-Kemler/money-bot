@@ -1,0 +1,31 @@
+{
+  "name": "money-bot",
+  "version": "0.1.0",
+  "description": "Money Bot — human-approved UK/EU checkout payments for Cursor agents. No card numbers touch the agent.",
+  "author": {
+    "name": "Money Bot"
+  },
+  "homepage": "https://github.com/Heinrich-Kemler/money-bot",
+  "repository": "https://github.com/Heinrich-Kemler/money-bot",
+  "license": "MIT",
+  "keywords": [
+    "payments",
+    "checkout",
+    "uk",
+    "eu",
+    "revolut",
+    "apple-pay",
+    "mcp"
+  ],
+  "variables": {
+    "type": "object",
+    "properties": {
+      "MONEY_BOT_MCP_URL": {
+        "type": "string",
+        "title": "Money Bot MCP URL",
+        "description": "Deployed Worker URL ending in /mcp (for example https://money-bot.<account>.workers.dev/mcp). No secrets."
+      }
+    },
+    "required": ["MONEY_BOT_MCP_URL"]
+  }
+}

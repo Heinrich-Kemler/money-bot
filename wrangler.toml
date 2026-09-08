@@ -1,0 +1,30 @@
+# Money Bot — Cloudflare Workers MCP (McpAgent)
+# Current Agents templates prefer wrangler.jsonc; this TOML is equivalent
+# and matches the requested scaffold layout.
+
+name = "money-bot"
+main = "src/index.ts"
+compatibility_date = "2026-07-02"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# Hard security: never auto-approve. Value is documented and ignored if raised.
+# Secrets (Revolut OAuth, etc.) MUST be set via `wrangler secret` / secret-request
+# — never commit them here.
+[vars]
+DEV_MODE = "false"
+AUTO_APPROVE_MAX = "0"
+
+[[durable_objects.bindings]]
+name = "MCP_OBJECT"
+class_name = "MoneyBotMCP"
+
+[[durable_objects.bindings]]
+name = "SPEND_STORE"
+class_name = "SpendStore"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MoneyBotMCP", "SpendStore"]

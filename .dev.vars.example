@@ -1,0 +1,9 @@
+# Copy to `.dev.vars` for local wrangler (never commit `.dev.vars`).
+# No production secrets belong in the repo.
+
+DEV_MODE=true
+AUTO_APPROVE_MAX=0
+
+# v1 (not implemented): per-user Revolut Business OAuth lives in the secret vault.
+# REVOLUT_CLIENT_ID=
+# REVOLUT_CLIENT_SECRET=
