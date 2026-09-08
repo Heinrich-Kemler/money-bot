@@ -106,7 +106,7 @@ Tool results return a `widget` for Life Admin and `approveUrl` for local smoke. 
 
 Human **Deny** retries match merchant domain (www-normalized) + currency + amount within £/€0.50 for 24h, plus cart fingerprint and lineage. **`EXPIRED` (timeout) does not** start that cooldown.
 
-v0 merchants must be **UK/EU-looking domains** (public-suffix allowlist) and **GBP/EUR**. Other regions return a clear error. This is a heuristic, not a legal geo check.
+v0 merchants must be **UK/EU-looking domains** (public-suffix allowlist, including `.pl`) and **GBP / EUR / PLN**. Other currencies and non-UK/EU hosts return a clear error. This is a heuristic, not a legal geo check. PLN on a `.com` (or other non-allowlisted) host is still rejected.
 
 If a `spendCap` is set, it must be **≥ amount**.
 

@@ -18,6 +18,7 @@ Open:
 - Exact wizard UX inside Cursor (MCP Apps iframe vs external PWA).
 - Where the cert and JWT live (per-tenant vault only — never git).
 - Partner / app-review path (UK vs EU entity).
+- **Currency (v1 follow-up, not this PR):** do not hard-lock Revolut Business spend to v0’s 2–3 currencies forever. Design toward **EU currencies that tenant’s Revolut can hold/spend** (at least PLN + major EU), not “GBP/EUR only forever.” v0 stays `GBP | EUR | PLN` + UK/EU suffix heuristic.
 
 ## No card-issuing-as-a-service
 
@@ -56,6 +57,17 @@ Open:
 - Cursor marketplace = **manual review**.
 
 Open: listing questionnaire for a payments-adjacent plugin that never holds funds.
+
+## Region / currency (v0)
+
+v0 currencies are **GBP, EUR, PLN**. The merchant host must still match the UK/EU public-suffix allowlist in `src/region.ts` (already includes `.pl`). That unblocks Allegro (`allegro.pl` + PLN) on the Grokbot widget Approve path without opening arbitrary global FX.
+
+PLN on a clearly non-UK/EU domain (e.g. `.com`) is still rejected. USD / CZK / other currencies stay rejected even on EU suffixes. PLN is allowed on any already-allowlisted UK/EU suffix, not only `.pl`. **Do not add every EU currency in v0.**
+
+Open:
+
+- Whether a later v0 pass should pair currency to suffix (PLN-only-on-`.pl`) instead of allowing PLN on any UK/EU host.
+- **v1 Revolut Business (follow-up):** the Worker must not treat `GBP | EUR | PLN` as a forever product cap. When a tenant connects their Revolut Business, spend currency should follow **what that account can hold/spend** (PLN + major EU at minimum). Do not implement that here — no Revolut connect, no extra ISO codes in this PR.
 
 ## Legal posture
 

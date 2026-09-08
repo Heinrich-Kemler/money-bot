@@ -13,8 +13,22 @@ export function normalizeMerchantDomain(domainOrUrl: string): string {
 }
 
 /**
+ * v0 checkout currencies. Not a global FX list — pair with the UK/EU
+ * public-suffix allowlist below. PLN is included for Allegro (.pl) and
+ * other already-allowlisted EU merchants; USD and other currencies stay out.
+ */
+export const ALLOWED_CURRENCIES = ["GBP", "EUR", "PLN"] as const;
+export type AllowedCurrency = (typeof ALLOWED_CURRENCIES)[number];
+
+export function isAllowedCurrency(
+  currency: string,
+): currency is AllowedCurrency {
+  return (ALLOWED_CURRENCIES as readonly string[]).includes(currency);
+}
+
+/**
  * Public suffixes treated as UK/EU for v0. Other regions are rejected
- * (Money Bot is not a global checkout agent).
+ * (Money Bot is not a global checkout agent). Includes `.pl`.
  */
 export const UK_EU_PUBLIC_SUFFIXES = [
   "co.uk",
@@ -60,15 +74,15 @@ export function isUkEuMerchantDomain(domain: string): boolean {
 }
 
 export function assertUkEuMerchant(merchantUrl: string, currency: string): void {
-  if (currency !== "GBP" && currency !== "EUR") {
+  if (!isAllowedCurrency(currency)) {
     throw new SpendError(
-      `Unsupported currency "${currency}". Money Bot v0 is UK/EU only (GBP or EUR).`,
+      `Unsupported currency "${currency}". Money Bot v0 is UK/EU only (GBP, EUR, or PLN).`,
     );
   }
   const domain = merchantDomainFromUrl(merchantUrl);
   if (!isUkEuMerchantDomain(domain)) {
     throw new SpendError(
-      `Unsupported merchant domain "${domain}". Money Bot v0 only supports UK/EU checkouts (GBP/EUR + UK/EU domain).`,
+      `Unsupported merchant domain "${domain}". Money Bot v0 only supports UK/EU checkouts (GBP/EUR/PLN + UK/EU domain).`,
     );
   }
 }

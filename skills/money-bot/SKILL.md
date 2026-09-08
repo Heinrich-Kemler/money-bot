@@ -24,7 +24,7 @@ You do **not** have `edit_spend_cap`, `report_checkout_outcome`, `dev_set_spend_
 
 ## When to use
 
-- UK or EU online checkout (GBP/EUR + UK/EU-looking domain).
+- UK or EU online checkout (GBP/EUR/PLN + UK/EU-looking domain, including `.pl` / Allegro).
 - Cart is filled and needs **human-approved** payment.
 
 Do **not**:
