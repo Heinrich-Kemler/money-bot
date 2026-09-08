@@ -31,10 +31,9 @@ import {
   verifyHostApiBearer,
 } from "./host-auth.ts";
 import {
-  handleWidgetDecision,
   mintAndVerifyWidgetClaims,
   parseWidgetDecisionBody,
-} from "./widget-decision.ts";
+} from "./widget-decision-core.ts";
 import { grokbotWidgetForPending } from "./widget.ts";
 import { AGENT_MCP_TOOLS, WIDGET_OPTIONS } from "./types.ts";
 
@@ -52,22 +51,6 @@ const HOST_TOKEN = "dev-only-host-api-token-change-me";
 
 function pending() {
   return createPendingSpendRequest(input, "user-1");
-}
-
-function hostRequest(
-  body: unknown,
-  headers: Record<string, string> = {},
-): Request {
-  return new Request("http://localhost:8787/host/widget-decision", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      Authorization: `Bearer host:${HOST_TOKEN}`,
-      [HOST_TENANT_HEADER]: "user-1",
-      ...headers,
-    },
-    body: JSON.stringify(body),
-  });
 }
 
 describe("agent MCP surface (widget PR)", () => {
@@ -218,57 +201,40 @@ describe("widget-decision keep_looking → no deny cooldown", () => {
 });
 
 describe("HOST_API_TOKEN fail closed", () => {
-  it("missing or invalid HOST_API_TOKEN → 401", async () => {
-    const body = {
-      spendRequestId: "sr_x",
-      decision: "approved",
-      lockedCartFingerprint: "fp",
-      tenantId: "user-1",
-    };
-    const unset = await handleWidgetDecision(
-      hostRequest(body, { Authorization: "Bearer host:anything" }),
-      { ENVIRONMENT: "production" } as Env,
-    );
-    assert.equal(unset.status, 401);
-
-    const missingHeader = await handleWidgetDecision(
-      hostRequest(body, { Authorization: "" }),
-      {
-        HOST_API_TOKEN: HOST_TOKEN,
-        APPROVAL_HMAC_SECRET: SECRET,
-        ENVIRONMENT: "development",
-      } as Env,
-    );
-    assert.equal(missingHeader.status, 401);
-
-    const wrong = await handleWidgetDecision(
-      hostRequest(body, { Authorization: `Bearer host:not-the-token-16ch` }),
-      {
-        HOST_API_TOKEN: HOST_TOKEN,
-        APPROVAL_HMAC_SECRET: SECRET,
-        ENVIRONMENT: "development",
-      } as Env,
-    );
-    assert.equal(wrong.status, 401);
-
-    const notHostScheme = await handleWidgetDecision(
-      hostRequest(body, { Authorization: `Bearer ${HOST_TOKEN}` }),
-      {
-        HOST_API_TOKEN: HOST_TOKEN,
-        APPROVAL_HMAC_SECRET: SECRET,
-        ENVIRONMENT: "development",
-      } as Env,
-    );
-    assert.equal(notHostScheme.status, 401);
-  });
-
-  it("requireHostApiToken / verifyHostApiBearer reject unset and bad tokens", () => {
+  it("missing or invalid HOST_API_TOKEN → 401", () => {
     assert.throws(
       () => requireHostApiToken({ ENVIRONMENT: "production" }),
       (error: unknown) =>
         error instanceof HostDecisionError &&
         error.status === 401 &&
         error.code === "missing_host_api_token",
+    );
+    assert.throws(
+      () => requireHostApiToken({ ENVIRONMENT: "development" }),
+      (error: unknown) =>
+        error instanceof HostDecisionError && error.status === 401,
+    );
+    assert.throws(
+      () =>
+        verifyHostApiBearer(
+          new Request("http://localhost/host/widget-decision"),
+          { HOST_API_TOKEN: HOST_TOKEN, ENVIRONMENT: "development" },
+        ),
+      (error: unknown) =>
+        error instanceof HostDecisionError &&
+        error.status === 401 &&
+        error.code === "bad_host_token",
+    );
+    assert.throws(
+      () =>
+        verifyHostApiBearer(
+          new Request("http://localhost/host/widget-decision", {
+            headers: { Authorization: `Bearer ${HOST_TOKEN}` },
+          }),
+          { HOST_API_TOKEN: HOST_TOKEN, ENVIRONMENT: "development" },
+        ),
+      (error: unknown) =>
+        error instanceof HostDecisionError && error.status === 401,
     );
     assert.throws(
       () =>
@@ -279,7 +245,17 @@ describe("HOST_API_TOKEN fail closed", () => {
           { HOST_API_TOKEN: HOST_TOKEN, ENVIRONMENT: "development" },
         ),
       (error: unknown) =>
-        error instanceof HostDecisionError && error.code === "bad_host_token",
+        error instanceof HostDecisionError &&
+        error.status === 401 &&
+        error.code === "bad_host_token",
+    );
+    assert.doesNotThrow(() =>
+      verifyHostApiBearer(
+        new Request("http://localhost/host/widget-decision", {
+          headers: { Authorization: `Bearer host:${HOST_TOKEN}` },
+        }),
+        { HOST_API_TOKEN: HOST_TOKEN, ENVIRONMENT: "development" },
+      ),
     );
   });
 });
