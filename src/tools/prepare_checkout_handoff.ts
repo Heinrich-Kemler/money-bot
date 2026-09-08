@@ -13,9 +13,9 @@ export function registerPrepareCheckoutHandoff(
     "prepare_checkout_handoff",
     {
       description:
-        "After APPROVED, move to WAITING_FOR_YOU and return checkout handoff " +
-        "(Apple Pay QR on desktop non-Safari, Revolut Pay QR, or 3DS). " +
-        "If already CHALLENGE, return challenge wait instructions. NEVER returns payment credentials.",
+        "After APPROVED, move to WAITING_FOR_YOU and return the locked checkoutUrl " +
+        "(the money path). Host must match the locked merchantDomain. " +
+        "Never open a different URL. NEVER returns payment credentials.",
       inputSchema: prepareCheckoutHandoffInputSchema,
     },
     async ({ spendRequestId }) => {

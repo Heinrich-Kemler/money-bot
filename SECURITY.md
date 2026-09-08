@@ -1,11 +1,17 @@
 # Money Bot security
 
-> **SCAFFOLD ONLY — not production.** There is **no** working production Approve path. `POST /host/spend-decision` and `POST /host/checkout-outcome` return **501** and document the signed OOB contract. They do **not** trust `decidedBy: "human"`. Do not process live spend until passkey/PWA assertions are implemented.
+> **SCAFFOLD ONLY — not production.** There is **no** working Approve path. `POST /host/spend-decision` and `POST /host/checkout-outcome` return **501** and document the signed OOB contract. They do **not** read `tenantId` or `decidedBy` from the body. Do not process live spend.
 
 Primary name: **Money Bot** (`money-bot`).  
 Internal metaphor only: the **Spend Gate** is the state machine below.
 
-v0 is **approval + handoff only**. The agent never sees a raw PAN. Revolut Business is **optional** and **not connected**. Money Bot **never holds funds** and is not card-issuing-as-a-service.
+v0 is **approval-request + URL handoff**. The agent should never see a raw PAN. Revolut Business is **not connected**. Money Bot **does not hold funds**.
+
+## Production agent tools (complete list)
+
+`request_spend` · `get_spend_status` · `prepare_checkout_handoff`
+
+Not registered (and must stay that way): `edit_spend_cap`, `report_checkout_outcome`, `dev_set_spend_decision`, any decide/approve tool. There is **no** `DEV_MODE` boolean that enables Approve.
 
 ## State machine
 
@@ -15,67 +21,65 @@ IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
                ↘ REAUTH_REQUIRED
 ```
 
-Tenant connection (day one, even though v0 does not connect Revolut):
+Tenant connection (day one, unused in v0):
 
 ```
 NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 ```
 
-`REAUTH_REQUIRED` applies when a tenant completed the Revolut Business **wizard** (cert + `client_id` + JWT + Enable access — **no public OAuth**) and the **~90-day re-consent** window lapses, or Enable access is revoked. Access tokens last ~**40 minutes** and must not be persisted. v0 checkout handoff does **not** require a connection; only v1-bound spends (`requiresTenantConnection`) pause into `REAUTH_REQUIRED`.
+`REAUTH_REQUIRED` is reserved for a future Revolut Business **wizard** (cert + `client_id` + JWT + Enable access — **no public OAuth**) and ~90-day re-consent. v0 handoff does **not** require a connection.
 
-- Approve **locks the cart**: amount + merchant + domain + shipping.
-- **Approve is out-of-band** (phone passkey / PWA). A chat button may only *initiate* that flow. **The agent must never be able to press Approve** (Ramp-style segregation of duties).
-- The OOB token **must bind `lockedCartFingerprint`** (amount + merchantDomain + currency + shipping). A signed assertion that omits the fingerprint is invalid.
-- **SCAFFOLD:** host decide/outcome endpoints are **501 stubs** (see `OOB_ASSERTION_CONTRACT` in `src/types.ts`). No half-wired “trust the string” Approve.
-- `DENIED` and `EXPIRED` are terminal from `PENDING`.
-- `CHALLENGE` hands SCA/3DS back to the human (UK ~£25, EU ~€30; Amex SafeKey ~4 min; Revolut 3DS ~5 min).
+- **`checkoutUrl` is the money path.** Locked to `merchantDomain` at `request_spend`, re-snapshotted at Approve, and the only URL `prepare_checkout_handoff` will return. Host ≠ lock → reject. No `merchantUrl` fallback.
+- Approve **locks the cart**: amount + merchant + domain + checkoutUrl + shipping. OOB token **must bind `lockedCartFingerprint`**.
+- **Approve is out-of-band** (planned phone passkey / PWA). A chat button may only *initiate* that flow. **The agent must never press Approve.**
+- **SCAFFOLD:** host decide/outcome endpoints are **501 stubs** (`OOB_ASSERTION_CONTRACT` in `src/types.ts`). No half-wired “trust the string” Approve. No unauthenticated `applyHostDecision` behind a config flag.
+- `DENIED` and `EXPIRED` are terminal from `PENDING` and share the retry cooldown.
+- If `spendCap` is present, it must be ≥ amount. Cap edits (host-only helper) never grant approval.
 
 ## Trust boundaries
 
 ```
-┌─────────────┐  tools only   ┌──────────────────┐
+┌─────────────┐  three tools   ┌──────────────────┐
 │ Cursor host │ ◄────────────► │ Money Bot Worker │
 │ + agent     │  never Approve │ MCP + SpendStore │
 └──────┬──────┘                └─────────┬────────┘
-       │ initiate OOB                    │ per-tenant DO
-       ▼                                 │ never pooled funds
+       │ initiate OOB (planned)          │ per-tenant DO
+       ▼                                 │
 ┌─────────────┐                          ▼
-│ Human phone │  passkey / PWA    ┌──────────────────┐
+│ Human device│  planned passkey  ┌──────────────────┐
 │ (Approve)   │                   │ Merchant checkout│
-│ Apple Pay / │  QR / 3DS         │ (human browser)  │
-│ Revolut Pay │                   └──────────────────┘
-└─────────────┘
+│             │  locked URL only  │ (human browser)  │
+└─────────────┘                   └──────────────────┘
 ```
 
 | Zone | Trusted for | Not trusted for |
 | --- | --- | --- |
-| Agent / model | `request_spend`, `get_spend_status`, opening a checkout URL | **Pressing Approve**, PAN/CVC/expiry, secrets, self-approving a cart diff |
-| Chat UI | *Initiating* OOB Approve, locked-cart preview, plain-text fallback | Completing Approve in-chat; agent-clickable Approve |
-| Human device (OOB) | Passkey/PWA Approve, Apple Pay / Revolut Pay / 3DS | Being driven by the agent |
-| Worker + SpendStore | Spend state, cart lock, tenant connection **metadata** (no tokens) | Card minting, PAN, CVV, access JWTs |
-| Per-tenant Revolut (v1) | That tenant’s Business account only | Shared/pooled issuer, public OAuth |
+| Agent / model | The three tools above | **Pressing Approve**, PAN/CVC/expiry, secrets, self-approving a cart diff, marking `PAID` |
+| Chat UI | *Initiating* OOB Approve (when built) | Completing Approve in-chat |
+| Human device (OOB) | Planned passkey/PWA Approve; paying on the merchant page | Being driven by the agent |
+| Worker + SpendStore | Spend state, cart lock, tenant **metadata** (no tokens) | Card minting, PAN, CVV, access JWTs |
+| Per-tenant Revolut (v1, not built) | That tenant’s Business account only | Shared/pooled issuer, public OAuth |
 
-## PCI honesty
+## Card-data posture (not a certification)
 
-| Version | PAN | CDE | Notes |
-| --- | --- | --- | --- |
-| **v0** | Never touched | **Out of CDE** | Handoff only. Sanitizer redacts PAN-like strings if they appear. |
-| **v1** | Fetch into a browser field | **SAQ D** unless a PCI vault / iframe (Basis Theory, VGS, Skyflow) | `READ_SENSITIVE_CARD_DATA` + IP allowlist. **Never store CVV post-auth.** Prefer vault/iframe over Worker-side PAN. |
+v0 **does not implement** PAN fetch or storage. That is a design goal. It is **not** a QSA assessment and we do **not** claim “out of CDE” as a legal status.
+
+A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault/iframe). **Never store CVV.** No vault is integrated.
 
 ## Threat model and mitigations
 
 ### 1. Agent compromise / agent-clickable Approve
 
-**Threat.** The model or a prompt-injected page “clicks Approve” in chat (or calls a decide tool).
+**Threat.** The model “clicks Approve” or calls a decide tool.
 
 **Mitigations**
 
 - `AUTO_APPROVE_MAX = 0`.
-- `decidedBy: "agent"` is rejected. Raw `decidedBy: "human"` is **not** a valid production signal.
-- Agent MCP tools are only `request_spend`, `get_spend_status`, `prepare_checkout_handoff`. The agent **cannot** call `report_checkout_outcome` or mark `PAID`.
+- No decide tool on the agent MCP surface. `DEV_MODE` does not exist as an Approve switch.
+- `applyDecision` requires `assertionVerified`. Raw `decidedBy: "human"` is rejected. `decidedBy: "agent"` is rejected. Client-supplied actor strings are not stored.
+- Host decide does not parse the body (`tenantId` / `decidedBy` ignored). Always 501.
 - Missing `props.userId` **fails closed** (no `"anonymous"` Durable Object).
-- **TODO(host-approval-bridge):** signed OOB JWT/HMAC with `tenantId`, `spendRequestId`, `decision`, `lockedCartFingerprint`. Endpoint is **501** until that exists.
-- Ramp-style **segregation of duties**: requester (agent) ≠ approver (human device).
+- **TODO(host-approval-bridge):** signed OOB JWT/HMAC with `tenantId`, `spendRequestId`, `decision`, `lockedCartFingerprint`.
 
 ### 2. Prompt-injection forced spend
 
@@ -83,27 +87,29 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 **Mitigations**
 
-- Only the OOB host path can set `APPROVED`.
-- Deny is final.
-- Approval UI must show the **locked cart** from the spend record.
+- Only a future verified OOB host path can set `APPROVED` (not wired).
+- Deny/expire are terminal and share a cooldown.
+- Approval UI (when built) must show the **locked cart** from the spend record.
 
 ### 3. PAN exfiltration
 
-**Threat.** Tool results or chat leak PAN/CVC.
+**Threat.** Tool results, logs, or chat leak PAN/CVC.
 
 **Mitigations**
 
-- v0 never fetches PAN (out of CDE).
-- Handoff returns URL + instructions only.
-- Output sanitizer; skill forbids repeating credentials.
+- v0 does not fetch PAN.
+- Handoff returns the locked URL + instructions only.
+- Output sanitizer (Luhn-only on free text; identifier keys such as `orderId` skipped).
+- Sanitize-on-write before Durable Object persistence.
+- Workers Logs **invocation logs and traces are disabled** so request bodies are not persisted to Cloudflare observability.
 
-### 4. Deny-retry spam
+### 4. Deny/expire-retry spam
 
-**Threat.** Agent re-requests after Deny.
+**Threat.** Agent re-requests after Deny or after TTL.
 
 **Mitigations**
 
-- `DENIED` / `EXPIRED` are terminal. Retry window (24h) matches **merchantDomain + currency + amount within £/€0.50**, plus locked-cart fingerprint and spend-request **lineage** (blocks ±£0.01 and cart-hash retries).
+- `DENIED` / `EXPIRED` are terminal. 24h cooldown matches **normalized merchantDomain + currency + amount within £/€0.50**, plus locked-cart fingerprint and spend-request **lineage**.
 
 ### 5. Cross-tenant / pooled funds
 
@@ -111,8 +117,8 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 **Mitigations**
 
-- Durable Object `tenant:<tenantId>`.
-- **No card-issuing-as-a-service.** Each tenant’s own Revolut Business only. Never pool funds.
+- Durable Object `tenant:<tenantId>` from authenticated `props.userId` only.
+- No card-issuing-as-a-service. Never pool funds.
 
 ### 6. Fake “OAuth connect”
 
@@ -120,40 +126,42 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 **Mitigations**
 
-- Documented: **no public OAuth**. v1 connect is a **wizard** (cert + client_id + JWT + Enable access). Access token ~40m; **90-day re-consent** → `REAUTH_REQUIRED`. Tokens are not stored on the spend record.
+- Documented: **no public OAuth**. v1 connect, if built, is a **wizard**. Tokens are not stored on the spend record.
 
-### 7. Cart swap after Approve
+### 7. Cart / checkoutUrl swap after Approve
 
-**Threat.** Amount/shipping changes after the human approved.
+**Threat.** Amount, shipping, or **checkout host** changes after the human approved.
 
 **Mitigations**
 
-- Locked cart at `APPROVED`; mismatch → new `PENDING` with `cartDiff` and the previous lock is **cancelled** (`FAILED` + `supersededBySpendRequestId`). Agent cannot approve the replacement.
+- Locked cart includes `checkoutUrl`. Handoff refuses a swapped URL or a host ≠ `merchantDomain`.
+- Mismatch → new `PENDING` with `cartDiff`; previous lock **cancelled** (`FAILED` + `supersededBySpendRequestId`).
 
 ### 8. Log / transcript leakage
 
 **Mitigations**
 
 - No secrets in git or `wrangler.toml`.
-- Do not persist Revolut access tokens or CVV.
-- Audit: who approved (OOB actor), when, merchant, amount, locked cart, order id — never PAN.
+- Observability invocation logs / traces off.
+- Do not persist access tokens or CVV.
+- Audit: when, merchant, amount, locked cart, order id — never PAN.
 
 ## Audit fields
 
 | Field | Meaning |
 | --- | --- |
 | `spendRequestId` | `sr_…` |
-| `tenantId` | Tenant; never a shared float |
+| `tenantId` | From authenticated host props — never a request-body field |
 | `status` | Includes `REAUTH_REQUIRED` |
-| `tenantConnection` | `NOT_CONNECTED` \| `CONNECTED` \| `REAUTH_REQUIRED` + 90-day `consentExpiresAt` |
-| `requiresTenantConnection` | `false` in v0; v1 card path only |
-| `lockedCart` | amount, merchant, domain, shipping |
-| `decidedBy` | OOB human / device — never `agent` |
+| `tenantConnection` | `NOT_CONNECTED` \| `CONNECTED` \| `REAUTH_REQUIRED` |
+| `requiresTenantConnection` | `false` in v0 |
+| `lockedCart` | amount, merchant, domain, **checkoutUrl**, shipping |
+| `decidedBy` | Recorded as `oob-assertion` after a verified assertion — never a client string |
 
 ## v0 non-goals
 
-- No Revolut Business connect, Cards API, virtual PAN, freeze/thaw, or `TransactionCreated` consumer.
-- No Revolut Merchant API. No card-issuing-as-a-service.
-- No in-chat / agent-clickable Approve — **TODO(host-approval-bridge) is a 501 signed-OOB contract**, not a chat Approve button and not a `decidedBy` string.
-- No agent-callable payment outcome. PAN sanitizer skips `orderId` (Luhn-only redaction for digit runs).
+- No Revolut Business connect, Cards API, virtual PAN, or payment-brand integrations.
+- No in-chat / agent-clickable Approve — **501 signed-OOB contract** only.
+- No agent-callable payment outcome.
 - No production per-user public OAuth (it does not exist for Revolut Business).
+- No claim of FCA / KNF authorisation or PCI certification.

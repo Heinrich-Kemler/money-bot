@@ -3,6 +3,7 @@ import {
   assertCheckoutUrlMatchesLock,
   assertUkEuMerchant,
   merchantDomainFromUrl,
+  normalizeMerchantDomain,
 } from "./region.ts";
 import {
   AUTO_APPROVE_MAX,
@@ -55,13 +56,56 @@ export function shippingKey(shipping?: Shipping): string {
   ].join("|");
 }
 
+export function assertSpendCapAllowsAmount(
+  spendCap: number | undefined,
+  amount: number,
+): void {
+  if (spendCap !== undefined && spendCap < amount) {
+    throw new SpendError(
+      `spendCap (${spendCap}) must be greater than or equal to amount (${amount}).`,
+    );
+  }
+}
+
 export function cartFromInput(input: RequestSpendInput): LockedCart {
+  assertUkEuMerchant(input.merchantUrl, input.currency);
+  const merchantDomain = merchantDomainFromUrl(input.merchantUrl);
+  const checkoutUrl = assertCheckoutUrlMatchesLock(
+    input.checkoutUrl,
+    merchantDomain,
+  );
+  assertSpendCapAllowsAmount(input.spendCap, input.amount);
   return {
     amount: input.amount,
     currency: input.currency,
     merchantName: input.merchantName,
-    merchantDomain: merchantDomainFromUrl(input.merchantUrl),
+    merchantDomain,
+    checkoutUrl,
     shipping: input.shipping,
+  };
+}
+
+/** Re-validate the cart the human is about to lock (F8). */
+export function snapshotLockedCart(request: SpendRequest): LockedCart {
+  assertUkEuMerchant(request.merchantUrl, request.currency);
+  const merchantDomain = merchantDomainFromUrl(request.merchantUrl);
+  if (normalizeMerchantDomain(request.merchantDomain) !== merchantDomain) {
+    throw new SpendError(
+      "merchantDomain does not match merchantUrl. Refusing to lock cart.",
+    );
+  }
+  const checkoutUrl = assertCheckoutUrlMatchesLock(
+    request.checkoutUrl,
+    merchantDomain,
+  );
+  assertSpendCapAllowsAmount(request.spendCap, request.amount);
+  return {
+    amount: request.amount,
+    currency: request.currency,
+    merchantName: request.merchantName,
+    merchantDomain,
+    checkoutUrl,
+    shipping: request.shipping,
   };
 }
 
@@ -69,13 +113,14 @@ export function amountToMinorUnits(amount: number): number {
   return Math.round(amount * 100);
 }
 
-/** Canonical lock binding for OOB tokens (M11). */
+/** Canonical lock binding for OOB tokens (M11). Includes the money-path URL. */
 export function lockedCartFingerprint(cart: LockedCart): string {
   return [
-    cart.merchantDomain,
+    normalizeMerchantDomain(cart.merchantDomain),
     cart.currency,
     String(amountToMinorUnits(cart.amount)),
     shippingKey(cart.shipping),
+    cart.checkoutUrl,
   ].join("|");
 }
 
@@ -84,7 +129,7 @@ export function denyFingerprint(
   currency: string,
   amount: number,
 ): string {
-  return `${domain}|${currency}|${amountToMinorUnits(amount)}`;
+  return `${normalizeMerchantDomain(domain)}|${currency}|${amountToMinorUnits(amount)}`;
 }
 
 export function cartFromRequest(request: SpendRequest): LockedCart {
@@ -155,12 +200,8 @@ export function createPendingSpendRequest(
   if (AUTO_APPROVE_MAX !== 0) {
     throw new SpendError("AUTO_APPROVE_MAX must remain 0");
   }
-  assertUkEuMerchant(input.merchantUrl, input.currency);
   const lockedCart = cartFromInput(input);
-  const checkoutUrl = assertCheckoutUrlMatchesLock(
-    input.checkoutUrl,
-    lockedCart.merchantDomain,
-  );
+  const checkoutUrl = lockedCart.checkoutUrl;
   return {
     spendRequestId: newSpendRequestId(),
     tenantId,
@@ -229,13 +270,17 @@ export function isRetryOfDenied(
     lineage.add(candidate.supersededSpendRequestId);
   }
 
+  const candidateDomain = normalizeMerchantDomain(candidate.merchantDomain);
+
   return existing.find((request) => {
-    if (request.status !== "DENIED") {
+    if (request.status !== "DENIED" && request.status !== "EXPIRED") {
       return false;
     }
     const decided = request.decidedAt
       ? Date.parse(request.decidedAt)
-      : Date.parse(request.updatedAt);
+      : request.status === "EXPIRED"
+        ? Date.parse(request.expiresAt)
+        : Date.parse(request.updatedAt);
     if (at.getTime() - decided > windowMs) {
       return false;
     }
@@ -245,7 +290,7 @@ export function isRetryOfDenied(
     if (request.currency !== candidate.currency) {
       return false;
     }
-    if (request.merchantDomain !== candidate.merchantDomain) {
+    if (normalizeMerchantDomain(request.merchantDomain) !== candidateDomain) {
       return false;
     }
     if (
@@ -306,7 +351,12 @@ export function findLockedCartMismatch(
 export function applyDecision(
   request: SpendRequest,
   decision: SpendDecision,
-  opts: { decidedBy?: string; denyReason?: string; orderId?: string } = {},
+  opts: {
+    assertionVerified?: boolean;
+    decidedBy?: string;
+    denyReason?: string;
+    orderId?: string;
+  } = {},
   at = new Date(),
 ): SpendRequest {
   const current = maybeExpire(request, at);
@@ -328,17 +378,27 @@ export function applyDecision(
       "The agent cannot Approve. Approval must be out-of-band (phone passkey/PWA). A chat button may only initiate that flow.",
     );
   }
+  if (!opts.assertionVerified) {
+    throw new SpendError(
+      "Approve/Deny requires a verified signed OOB assertion. " +
+        "Raw decidedBy or a request-body actor string is not accepted.",
+    );
+  }
   if (current.status !== "PENDING") {
     throw new SpendError(
       `Cannot decide a spend request in status "${current.status}".`,
     );
   }
+  const lockedCart = snapshotLockedCart(current);
   if (decision === "denied") {
     return {
       ...current,
       status: "DENIED",
+      lockedCart,
+      lockedCartFingerprint: lockedCartFingerprint(lockedCart),
+      checkoutUrl: lockedCart.checkoutUrl,
       decidedAt: nowIso(at),
-      decidedBy: opts.decidedBy ?? "human",
+      decidedBy: "oob-assertion",
       denyReason: opts.denyReason,
       updatedAt: nowIso(at),
     };
@@ -346,9 +406,12 @@ export function applyDecision(
   return {
     ...current,
     status: "APPROVED",
-    lockedCart: current.lockedCart,
+    lockedCart,
+    lockedCartFingerprint: lockedCartFingerprint(lockedCart),
+    checkoutUrl: lockedCart.checkoutUrl,
+    merchantDomain: lockedCart.merchantDomain,
     decidedAt: nowIso(at),
-    decidedBy: opts.decidedBy ?? "human",
+    decidedBy: "oob-assertion",
     orderId: opts.orderId ?? current.orderId,
     updatedAt: nowIso(at),
   };
@@ -365,10 +428,44 @@ export function editSpendCap(
       "Spend cap can only be edited while PENDING. Changing the cap never grants approval.",
     );
   }
+  assertSpendCapAllowsAmount(spendCap, current.amount);
   return {
     ...current,
     spendCap,
     updatedAt: nowIso(at),
+  };
+}
+
+/** Open only the locked money-path URL (F4). Reject host swaps after Approve. */
+export function resolveHandoffUrl(request: SpendRequest): string {
+  const lockedDomain = normalizeMerchantDomain(request.lockedCart.merchantDomain);
+  const lockedUrl = request.lockedCart.checkoutUrl;
+  if (!lockedUrl) {
+    throw new SpendError(
+      "Locked cart is missing checkoutUrl (the money path). Handoff refused.",
+    );
+  }
+  if (request.checkoutUrl && request.checkoutUrl !== lockedUrl) {
+    throw new SpendError(
+      "checkoutUrl was swapped after the cart lock. Handoff refused.",
+    );
+  }
+  return assertCheckoutUrlMatchesLock(lockedUrl, lockedDomain);
+}
+
+function handoffResult(
+  request: SpendRequest,
+  status: CheckoutHandoffResult["status"],
+  checkoutUrl: string,
+  instructions: string,
+): CheckoutHandoffResult {
+  return {
+    spendRequestId: request.spendRequestId,
+    status,
+    checkoutUrl,
+    merchantDomain: request.lockedCart.merchantDomain,
+    moneyPath: true,
+    handoffInstructions: instructions,
   };
 }
 
@@ -387,19 +484,16 @@ export function prepareHandoff(
       "Deny is final for this spend request. Checkout handoff is not allowed.",
     );
   }
+  const checkoutUrl = resolveHandoffUrl(current);
   if (current.status === "CHALLENGE") {
-    const checkoutUrl = assertCheckoutUrlMatchesLock(
-      current.checkoutUrl,
-      current.merchantDomain,
-    );
     return {
       request: current,
-      result: {
-        spendRequestId: current.spendRequestId,
-        status: "CHALLENGE",
+      result: handoffResult(
+        current,
+        "CHALLENGE",
         checkoutUrl,
-        handoffInstructions: CHALLENGE_INSTRUCTIONS,
-      },
+        CHALLENGE_INSTRUCTIONS,
+      ),
     };
   }
   if (current.status !== "APPROVED" && current.status !== "WAITING_FOR_YOU") {
@@ -407,10 +501,6 @@ export function prepareHandoff(
       `Checkout handoff requires status APPROVED or WAITING_FOR_YOU (got "${current.status}").`,
     );
   }
-  const checkoutUrl = assertCheckoutUrlMatchesLock(
-    current.checkoutUrl,
-    current.merchantDomain,
-  );
   const next: SpendRequest = {
     ...current,
     status: "WAITING_FOR_YOU",
@@ -419,12 +509,12 @@ export function prepareHandoff(
   };
   return {
     request: next,
-    result: {
-      spendRequestId: next.spendRequestId,
-      status: "WAITING_FOR_YOU",
+    result: handoffResult(
+      next,
+      "WAITING_FOR_YOU",
       checkoutUrl,
-      handoffInstructions: HANDOFF_INSTRUCTIONS,
-    },
+      HANDOFF_INSTRUCTIONS,
+    ),
   };
 }
 
@@ -436,12 +526,7 @@ function challengeFromKind(
     kind,
     startedAt: nowIso(at),
     expectedMinutes: CHALLENGE_MINUTES[kind],
-    note:
-      kind === "amex_safekey"
-        ? "Amex SafeKey typically takes about 4 minutes. Hand the screen to the human."
-        : kind === "revolut_3ds"
-          ? "Revolut 3DS typically takes about 5 minutes. Hand the screen to the human."
-          : "SCA/3DS is still required in the UK (~£25) and EU (~€30). Hand the screen to the human.",
+    note: "A merchant authentication challenge may be in progress. Hand the screen to the human. Money Bot does not implement brand SCA flows.",
   };
 }
 

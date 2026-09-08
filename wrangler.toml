@@ -7,14 +7,21 @@ main = "src/index.ts"
 compatibility_date = "2026-07-02"
 compatibility_flags = ["nodejs_compat"]
 
+# Payments plugin: do not persist invocation/request bodies to Workers Logs.
 [observability]
-enabled = true
+enabled = false
+
+[observability.logs]
+invocation_logs = false
+
+[observability.traces]
+enabled = false
 
 # Hard security: never auto-approve. Value is documented and ignored if raised.
 # Secrets (Revolut OAuth, etc.) MUST be set via `wrangler secret` / secret-request
 # — never commit them here.
+# DEV_MODE does not exist: flipping a boolean must never enable Approve.
 [vars]
-DEV_MODE = "false"
 AUTO_APPROVE_MAX = "0"
 
 [[durable_objects.bindings]]

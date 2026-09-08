@@ -41,37 +41,8 @@ export const prepareCheckoutHandoffInputSchema = z.object({
   spendRequestId: z.string().min(1),
 });
 
-export const devSetSpendDecisionInputSchema = z.object({
-  spendRequestId: z.string().min(1),
-  decision: z.enum(["approved", "denied"]),
-  denyReason: z.string().max(500).optional(),
-  decidedBy: z.string().max(200).optional(),
-  orderId: z.string().max(200).optional(),
-});
-
-export const editSpendCapInputSchema = z.object({
-  spendRequestId: z.string().min(1),
-  spendCap: z.number().positive().finite(),
-});
-
-export const reportCheckoutOutcomeInputSchema = z.object({
-  spendRequestId: z.string().min(1),
-  outcome: z.enum(["PAID", "CHALLENGE", "FAILED"]),
-  challengeKind: z
-    .enum(["sca", "amex_safekey", "revolut_3ds", "other"])
-    .optional(),
-  orderId: z.string().max(200).optional(),
-});
-
 export type RequestSpendInput = z.infer<typeof requestSpendInputSchema>;
 export type GetSpendStatusInput = z.infer<typeof getSpendStatusInputSchema>;
 export type PrepareCheckoutHandoffInput = z.infer<
   typeof prepareCheckoutHandoffInputSchema
->;
-export type DevSetSpendDecisionInput = z.infer<
-  typeof devSetSpendDecisionInputSchema
->;
-export type EditSpendCapInput = z.infer<typeof editSpendCapInputSchema>;
-export type ReportCheckoutOutcomeInput = z.infer<
-  typeof reportCheckoutOutcomeInputSchema
 >;

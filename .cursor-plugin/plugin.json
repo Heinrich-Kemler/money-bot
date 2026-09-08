@@ -1,7 +1,7 @@
 {
   "name": "money-bot",
   "version": "0.1.0",
-  "description": "Money Bot — human-approved UK/EU checkout payments for Cursor agents. No card numbers touch the agent.",
+  "description": "Money Bot — scaffold for human-approved UK/EU checkout handoff. Not production. No card numbers touch the agent.",
   "author": {
     "name": "Money Bot"
   },
@@ -13,8 +13,6 @@
     "checkout",
     "uk",
     "eu",
-    "revolut",
-    "apple-pay",
     "mcp"
   ],
   "variables": {

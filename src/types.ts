@@ -100,6 +100,8 @@ export type LockedCart = {
   currency: string;
   merchantName: string;
   merchantDomain: string;
+  /** Money path. Host must equal merchantDomain. Locked at request + Approve. */
+  checkoutUrl: string;
   shipping?: Shipping;
 };
 
@@ -143,7 +145,7 @@ export type SpendRequest = {
   challenge?: ChallengeInfo;
   /**
    * v1 only: spend is bound to this tenant's Revolut Business.
-   * v0 handoff (Apple Pay / Revolut Pay) does not require a connection.
+   * v0 URL handoff does not require a Revolut connection.
    */
   requiresTenantConnection: boolean;
   statusBeforeReauth?: PersistedSpendStatus;
@@ -175,7 +177,10 @@ export type SpendStatusResult = SpendRequest & {
 export type CheckoutHandoffResult = {
   spendRequestId: string;
   status: "WAITING_FOR_YOU" | "CHALLENGE";
+  /** The payment path. Host is locked to merchantDomain. Never substitute another URL. */
   checkoutUrl: string;
+  merchantDomain: string;
+  moneyPath: true;
   handoffInstructions: string;
 };
 
@@ -193,7 +198,7 @@ export const DENY_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 /** Same-domain deny matches if |Δamount| is within this (blocks ±£0.01 retries). */
 export const DENY_AMOUNT_EPSILON = 0.5;
 
-/** Agent-visible MCP tools. Outcome and cap tools are host/OOB only. */
+/** Complete production agent MCP surface. No decide, outcome, or cap tools. */
 export const AGENT_MCP_TOOLS = [
   "request_spend",
   "get_spend_status",
@@ -215,20 +220,23 @@ export const OOB_ASSERTION_CONTRACT = {
     iat: "unix seconds",
     jti: "unique assertion id (replay protection)",
     spendRequestId: "sr_…",
-    tenantId: "authenticated Cursor user id — never anonymous, never omitted",
+    tenantId:
+      "authenticated Cursor user id from the signed assertion + host session — never anonymous, never a JSON body field",
     decision: "approved | denied",
     lockedCartFingerprint:
-      "MUST equal the stored locked-cart fingerprint (binds token to amount+merchantDomain+currency+shipping)",
+      "MUST equal the stored locked-cart fingerprint (binds token to amount+merchantDomain+currency+shipping+checkoutUrl)",
   },
   rejected: [
     "raw decidedBy string",
     'decidedBy: "human"',
+    "tenantId from request JSON body",
     "agent tools/call",
     "unsigned JSON body",
+    "DEV_MODE decide switch",
   ],
 } as const;
 
-/** SCA still applies in the UK (~£25) and EU (~€30). */
+/** Informational only — Money Bot does not implement SCA. */
 export const SCA_THRESHOLD_GBP = 25;
 export const SCA_THRESHOLD_EUR = 30;
 
@@ -240,17 +248,13 @@ export const CHALLENGE_MINUTES = {
 } as const;
 
 export const HANDOFF_INSTRUCTIONS =
-  "Open the checkout URL and hand the screen to the human. " +
-  "Never show, type, or return a raw PAN, CVC, or expiry. " +
-  "Apple Pay on desktop Safari uses the payment sheet. " +
-  "Apple Pay on desktop non-Safari: the human scans a QR with iPhone (iOS 18+), about 30 seconds. " +
-  "Revolut Pay: if the merchant supports it, the human scans a QR and approves in the Revolut app; otherwise fall back to Apple Pay. " +
-  "If a 3-D Secure / SCA challenge appears (UK ~£25, EU ~€30), hand the screen to the human and wait — " +
-  "Amex SafeKey about 4 minutes, Revolut 3DS about 5 minutes. " +
+  "checkoutUrl is the money path. Open only that https URL; its host must match " +
+  "the locked merchantDomain. Never substitute merchantUrl or another host. " +
+  "Hand the screen to the human. Never show, type, or return a raw PAN, CVC, or expiry. " +
+  "The merchant page may present its own wallet or SCA UI — Money Bot does not implement those flows. " +
   "Do not mark PAID yourself; only the human/host records payment outcome.";
 
 export const CHALLENGE_INSTRUCTIONS =
-  "A strong-customer-authentication challenge is in progress. " +
-  "Hand the screen back to the human and wait. " +
-  "Amex SafeKey typically takes about 4 minutes; Revolut 3DS about 5 minutes. " +
-  "Do not enter card numbers. Only the human/host records PAID or FAILED.";
+  "A merchant authentication challenge appears to be in progress. " +
+  "Hand the screen back to the human and wait. Do not enter card numbers. " +
+  "Only the human/host records PAID or FAILED.";

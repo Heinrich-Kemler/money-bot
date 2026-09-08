@@ -16,7 +16,9 @@ export function registerRequestSpend(
         "Create a PENDING spend request from IDLE after the cart is filled. " +
         "autoApproveMax is £0. A chat control may only *initiate* out-of-band " +
         "Approve (phone passkey/PWA) — the agent must never press Approve. " +
-        "Cart (amount, merchant, domain, shipping) locks at Approve. Never include payment credentials.",
+        "checkoutUrl is the money path and must be https on the merchant domain. " +
+        "Cart (amount, merchant, domain, checkoutUrl, shipping) locks at Approve. " +
+        "Never include payment credentials.",
       inputSchema: requestSpendInputSchema,
     },
     async (input) => {

@@ -50,12 +50,14 @@ export default {
     }
 
     if (url.pathname === "/host/spend-decision" && request.method === "POST") {
-      // C2/C4: never apply a decision from spoofable JSON. Contract only.
+      // F2/F3: hard 501. Do not read the body (no tenantId / decidedBy).
+      void request.body;
       return scaffoldNotImplemented("approve");
     }
 
     if (url.pathname === "/host/checkout-outcome" && request.method === "POST") {
       // C1: payment outcome is host/OOB only — not implemented in v0.
+      void request.body;
       return scaffoldNotImplemented("outcome");
     }
 

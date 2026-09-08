@@ -2,7 +2,6 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { requireTenantId } from "./auth.ts";
 import { SpendError } from "./errors.ts";
-import { registerDevSetSpendDecision } from "./tools/dev_set_spend_decision.ts";
 import { registerGetSpendStatus } from "./tools/get_spend_status.ts";
 import { registerPrepareCheckoutHandoff } from "./tools/prepare_checkout_handoff.ts";
 import { registerRequestSpend } from "./tools/request_spend.ts";
@@ -41,12 +40,8 @@ export class MoneyBotMCP extends McpAgent<
     registerRequestSpend(this.server, ctx);
     registerGetSpendStatus(this.server, ctx);
     registerPrepareCheckoutHandoff(this.server, ctx);
-    // C1/H8: report_checkout_outcome and edit_spend_cap are NOT agent tools.
-    registerDevSetSpendDecision(
-      this.server,
-      ctx,
-      this.env?.DEV_MODE === "true",
-    );
+    // Prod agent surface is only the three tools above.
+    // No decide, outcome, cap-edit, or DEV_MODE Approve tool — ever.
     void AGENT_MCP_TOOLS;
   }
 }

@@ -2,16 +2,16 @@
 
 Tracked decisions for Money Bot (`money-bot`). “Spend Gate” is internal only.
 
-v0 is approval + handoff. Revolut is **optional**. **Do not implement** Revolut Business connect, card minting, or PCI PAN handling.
+v0 is a **scaffold**: approval-request + locked checkout URL handoff. **Do not implement** Revolut Business connect, card minting, or PAN handling.
 
 ## Revolut Business connect (v1 — no public OAuth)
 
 Verified:
 
 - There is **no public OAuth** for Revolut Business.
-- Connect is a **wizard**, not one-tap: per-tenant **certificate** + **`client_id`** + **JWT** + **Enable access**.
-- Access token ~**40 minutes**. Refresh / Enable access needs **~90-day re-consent** → tenant and (v1-bound) spend status `REAUTH_REQUIRED`.
-- Revolut is **optional in v0**. The `REAUTH_REQUIRED` state exists from day one so v1 does not retrofit the machine.
+- Connect would be a **wizard**, not one-tap: per-tenant **certificate** + **`client_id`** + **JWT** + **Enable access**.
+- Access token ~**40 minutes**. Refresh / Enable access needs **~90-day re-consent** → `REAUTH_REQUIRED`.
+- Revolut is **not connected in v0**. The `REAUTH_REQUIRED` state exists so v1 does not retrofit the machine.
 
 Open:
 
@@ -21,27 +21,27 @@ Open:
 
 ## No card-issuing-as-a-service
 
-Each tenant uses **their** Revolut Business. Money Bot never pools funds or issues cards as a platform. Personal Revolut has no card-issue API. Do not use Revolut Merchant API.
+If v1 is ever built, each tenant uses **their** Revolut Business. Money Bot never pools funds or issues cards as a platform. Personal Revolut has no card-issue API. Do not use Revolut Merchant API.
 
-## PCI honesty
+## Card-data posture (not a certification)
 
-- **v0:** never touches PAN → **out of CDE**.
-- **v1 PAN fetch:** **SAQ D** unless a PCI vault/iframe (**Basis Theory / VGS / Skyflow**).
-- **Never store CVV post-auth.**
-- `READ_SENSITIVE_CARD_DATA` + IP allowlist still required for any sensitive retrieve.
+- **v0:** does not fetch or store PAN. Design goal only — **not** a QSA “out of CDE” claim.
+- **v1 PAN fetch (if ever):** would need a PCI program (often discussed as SAQ D unless a vault/iframe). Not assessed.
+- **Never store CVV.**
+- No vault (Basis Theory / VGS / Skyflow) is integrated.
 
-Open: which vault/iframe, if any, before attempting Worker-side PAN.
+Open: whether a vault/iframe is a prerequisite before any Worker-side PAN is even considered.
 
-## Out-of-band Approve (Ramp SoD)
+## Out-of-band Approve (SoD)
 
-Chat may only **initiate** Approve. Completion is **phone passkey / PWA**. The **agent must never press Approve**.
+Chat may only **initiate** Approve. Completion is planned as **phone passkey / PWA**. The **agent must never press Approve**.
 
-**TODO(host-approval-bridge):** **SCAFFOLD / HTTP 501.** Production must POST a signed OOB JWT/HMAC. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. Not an agent-clickable chat Approve. Never accept `decidedBy` alone.
+**TODO(host-approval-bridge):** **SCAFFOLD / HTTP 501.** A future host must POST a signed OOB JWT/HMAC. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. `tenantId` comes from the assertion + authenticated session — **never** from a JSON body field. Never accept `decidedBy` alone. Do not add a `DEV_MODE` Approve switch.
 
 Open:
 
 - Passkey / WebAuthn provider and device binding to `tenantId`.
-- How MCP Apps (below) starts the OOB flow without giving the model a decide tool in production.
+- How MCP Apps starts the OOB flow without giving the model a decide tool.
 
 ## MCP Apps + marketplace
 
@@ -53,23 +53,22 @@ Open: listing questionnaire for a payments-adjacent plugin that never holds fund
 
 ## Legal posture
 
-Money Bot is a **technical agent**. It never holds funds, is not an issuer, and is not a payment institution.
+Money Bot is software. It does not hold funds and is not an issuer or payment institution.
 
-- Obtain **FCA** (UK) and **KNF** (PL) advice before v1.
-- Disclaimer belongs in README / marketplace copy (already drafted).
+- Obtain local regulatory advice (UK / EU / PL as applicable) before v1 or any production use.
+- Mentions of FCA / KNF are reminders to seek advice, not authorisation claims.
 
 Open: whether any EU entity or EMI partnership is required even for “bring your own Business account” v1.
 
 ## Checkout UX (v0)
 
-- Apple Pay desktop non-Safari: iPhone QR, iOS 18+, ~30s.
-- Revolut Pay: QR + in-app approve, else Apple Pay.
+- Money Bot returns a **locked https checkoutUrl** (host = merchant domain). That is the money path.
+- Wallet / SCA UI, if any, belongs to the **merchant page**. Money Bot does not implement those brand flows.
 - Never show a raw PAN in chat.
-- SCA UK ~£25 / EU ~€30; Amex SafeKey ~4 min; Revolut 3DS ~5 min → `CHALLENGE`.
 
 ## Mandate patterns
 
-AP2 Cart Mandate, MCP Agent Pay scoped tokens, Stripe SPT — principles only.
+AP2 Cart Mandate, MCP Agent Pay scoped tokens — principles only; not implemented.
 
 ## Branding
 

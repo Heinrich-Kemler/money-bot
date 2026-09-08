@@ -33,6 +33,8 @@ const input = {
   shipping: { country: "GB", postalCode: "SW1A 1AA" },
 };
 
+const oob = { assertionVerified: true as const };
+
 function pending(overrides: Partial<SpendRequest> = {}): SpendRequest {
   return {
     ...createPendingSpendRequest(input, "user-1"),
@@ -41,7 +43,7 @@ function pending(overrides: Partial<SpendRequest> = {}): SpendRequest {
 }
 
 describe("agent MCP surface", () => {
-  it("does not expose report_checkout_outcome or edit_spend_cap", () => {
+  it("lists only the three production tools", () => {
     assert.deepEqual([...AGENT_MCP_TOOLS], [
       "request_spend",
       "get_spend_status",
@@ -49,6 +51,7 @@ describe("agent MCP surface", () => {
     ]);
     assert.equal(AGENT_MCP_TOOLS.includes("report_checkout_outcome" as never), false);
     assert.equal(AGENT_MCP_TOOLS.includes("edit_spend_cap" as never), false);
+    assert.equal(AGENT_MCP_TOOLS.includes("dev_set_spend_decision" as never), false);
   });
 });
 
@@ -74,6 +77,10 @@ describe("request_spend result", () => {
     assert.equal(result.amount, 12.5);
     assert.equal(result.currency, "GBP");
     assert.equal(result.lockedCart.merchantDomain, "shop.example.co.uk");
+    assert.equal(
+      result.lockedCart.checkoutUrl,
+      "https://shop.example.co.uk/checkout",
+    );
     assert.equal(result.lockedCart.shipping?.postalCode, "SW1A 1AA");
     assert.ok(result.spendRequestId.startsWith("sr_"));
     assert.equal("checkoutUrl" in result, false);
@@ -94,24 +101,29 @@ describe("request_spend result", () => {
         error instanceof SpendError && /UK\/EU/.test(error.message),
     );
   });
+
+  it("rejects spendCap below amount", () => {
+    assert.throws(
+      () => createPendingSpendRequest({ ...input, spendCap: 10 }, "user-1"),
+      (error: unknown) =>
+        error instanceof SpendError && /spendCap/.test(error.message),
+    );
+  });
 });
 
 describe("deny is final", () => {
   it("rejects a second decision on a DENIED request", () => {
-    const denied = applyDecision(pending(), "denied", {
-      decidedBy: "human",
-      denyReason: "too expensive",
-    });
+    const denied = applyDecision(pending(), "denied", oob);
     assert.equal(denied.status, "DENIED");
     assert.throws(
-      () => applyDecision(denied, "approved"),
+      () => applyDecision(denied, "approved", oob),
       (error: unknown) =>
         error instanceof SpendError && /Deny is final/.test(error.message),
     );
   });
 
   it("blocks retry spam including a penny change on the same domain", () => {
-    const denied = applyDecision(pending(), "denied", { decidedBy: "human" });
+    const denied = applyDecision(pending(), "denied", oob);
     const exact = isRetryOfDenied([denied], {
       merchantDomain: "shop.example.co.uk",
       amount: 12.5,
@@ -126,6 +138,21 @@ describe("deny is final", () => {
     });
     assert.equal(penny?.spendRequestId, denied.spendRequestId);
   });
+
+  it("includes EXPIRED in the cooldown and normalizes www", () => {
+    const expired = maybeExpire(
+      pending({
+        expiresAt: new Date(Date.now() - 1000).toISOString(),
+      }),
+    );
+    assert.equal(expired.status, "EXPIRED");
+    const blocked = isRetryOfDenied([expired], {
+      merchantDomain: "www.shop.example.co.uk",
+      amount: 12.5,
+      currency: "GBP",
+    });
+    assert.equal(blocked?.spendRequestId, expired.spendRequestId);
+  });
 });
 
 describe("cart lock at approval", () => {
@@ -137,12 +164,13 @@ describe("cart lock at approval", () => {
   });
 
   it("treats amount / shipping mismatch as a new PENDING and cancels the old lock", () => {
-    const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
+    const approved = applyDecision(pending(), "approved", oob);
     const nextCart = {
       amount: 18,
       currency: "GBP" as const,
       merchantName: "Example Shop",
       merchantDomain: "shop.example.co.uk",
+      checkoutUrl: "https://shop.example.co.uk/checkout",
       shipping: { country: "GB", postalCode: "EC1A 1BB" },
     };
     const mismatch = findLockedCartMismatch([approved], nextCart);
@@ -171,7 +199,7 @@ describe("cart lock at approval", () => {
   });
 
   it("does not treat an identical locked cart as a mismatch", () => {
-    const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
+    const approved = applyDecision(pending(), "approved", oob);
     assert.equal(
       findLockedCartMismatch([approved], approved.lockedCart),
       undefined,
@@ -181,6 +209,16 @@ describe("cart lock at approval", () => {
       undefined,
     );
   });
+
+  it("re-snapshots checkoutUrl onto the locked cart at Approve", () => {
+    const approved = applyDecision(pending(), "approved", oob);
+    assert.equal(approved.status, "APPROVED");
+    assert.equal(
+      approved.lockedCart.checkoutUrl,
+      "https://shop.example.co.uk/checkout",
+    );
+    assert.equal(approved.decidedBy, "oob-assertion");
+  });
 });
 
 describe("edit spend cap", () => {
@@ -188,6 +226,14 @@ describe("edit spend cap", () => {
     const next = editSpendCap(pending(), 20);
     assert.equal(next.status, "PENDING");
     assert.equal(next.spendCap, 20);
+  });
+
+  it("rejects a cap below the requested amount", () => {
+    assert.throws(
+      () => editSpendCap(pending(), 5),
+      (error: unknown) =>
+        error instanceof SpendError && /spendCap/.test(error.message),
+    );
   });
 });
 
@@ -202,41 +248,61 @@ describe("prepare_checkout_handoff", () => {
   });
 
   it("requires https checkoutUrl on the locked merchant domain", () => {
-    const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
+    const approved = applyDecision(pending(), "approved", oob);
     const { result } = prepareHandoff(approved);
     assert.equal(result.status, "WAITING_FOR_YOU");
     assert.equal(result.checkoutUrl, "https://shop.example.co.uk/checkout");
+    assert.equal(result.moneyPath, true);
+    assert.equal(result.merchantDomain, "shop.example.co.uk");
     assert.equal("pan" in result, false);
+  });
 
-    const mismatched = applyDecision(
-      pending({ checkoutUrl: "https://evil.example.co.uk/pay" }),
-      "approved",
-      { decidedBy: "human" },
+  it("refuses a checkoutUrl swapped after the cart lock", () => {
+    const approved = applyDecision(pending(), "approved", oob);
+    assert.throws(
+      () =>
+        prepareHandoff({
+          ...approved,
+          checkoutUrl: "https://evil.example.co.uk/pay",
+        }),
+      (error: unknown) =>
+        error instanceof SpendError && /swapped after the cart lock/.test(error.message),
     );
     assert.throws(
-      () => prepareHandoff(mismatched),
+      () =>
+        prepareHandoff({
+          ...approved,
+          checkoutUrl: "https://evil.example.co.uk/pay",
+          lockedCart: {
+            ...approved.lockedCart,
+            checkoutUrl: "https://evil.example.co.uk/pay",
+          },
+        }),
       (error: unknown) =>
-        error instanceof SpendError && /must match locked merchantDomain/.test(error.message),
+        error instanceof SpendError &&
+        /must match locked merchantDomain/.test(error.message),
     );
   });
 
   it("does not fall back to merchantUrl when checkoutUrl is missing", () => {
-    const approved = applyDecision(
-      pending({ checkoutUrl: undefined }),
-      "approved",
-      { decidedBy: "human" },
-    );
+    const approved = applyDecision(pending(), "approved", oob);
     assert.throws(
-      () => prepareHandoff(approved),
+      () =>
+        prepareHandoff({
+          ...approved,
+          checkoutUrl: undefined,
+          lockedCart: { ...approved.lockedCart, checkoutUrl: "" },
+        }),
       (error: unknown) =>
-        error instanceof SpendError && /checkoutUrl is required/.test(error.message),
+        error instanceof SpendError &&
+        /missing checkoutUrl|checkoutUrl is required/.test(error.message),
     );
   });
 });
 
 describe("host-only completion paths", () => {
   it("WAITING_FOR_YOU → CHALLENGE → PAID is host logic, not an agent tool", () => {
-    const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
+    const approved = applyDecision(pending(), "approved", oob);
     const waiting = prepareHandoff(approved).request;
     const challenge = applyCheckoutOutcome(waiting, "CHALLENGE", {
       challengeKind: "revolut_3ds",
@@ -262,6 +328,19 @@ describe("out-of-band approve", () => {
       () => applyDecision(pending(), "approved", { decidedBy: "agent" }),
       (error: unknown) =>
         error instanceof SpendError && /cannot Approve/.test(error.message),
+    );
+  });
+
+  it("rejects raw decidedBy without a verified OOB assertion", () => {
+    assert.throws(
+      () => applyDecision(pending(), "approved", { decidedBy: "human" }),
+      (error: unknown) =>
+        error instanceof SpendError && /signed OOB assertion/.test(error.message),
+    );
+    assert.throws(
+      () => applyDecision(pending(), "approved"),
+      (error: unknown) =>
+        error instanceof SpendError && /signed OOB assertion/.test(error.message),
     );
   });
 });

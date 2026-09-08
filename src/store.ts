@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  applyDecision,
   applyTenantReauth,
   assertSameTenant,
   cartFromInput,
@@ -14,10 +13,10 @@ import {
   SpendError,
   supersedeLockedRequest,
 } from "./logic.ts";
+import { redactPaymentSecrets } from "./sanitize.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 import type {
   CheckoutHandoffResult,
-  SpendDecision,
   SpendRequest,
   TenantConnection,
 } from "./types.ts";
@@ -51,6 +50,13 @@ export class SpendStore extends DurableObject<Env> {
 
   private async writeIndex(ids: string[]): Promise<void> {
     await this.ctx.storage.put(INDEX_KEY, ids);
+  }
+
+  private async putRequest(request: SpendRequest): Promise<void> {
+    await this.ctx.storage.put(
+      request.spendRequestId,
+      redactPaymentSecrets(request),
+    );
   }
 
   async createFromInput(
@@ -102,9 +108,9 @@ export class SpendStore extends DurableObject<Env> {
           mismatch.request,
           request.spendRequestId,
         );
-        await this.ctx.storage.put(cancelled.spendRequestId, cancelled);
+        await this.putRequest(cancelled);
       }
-      await this.ctx.storage.put(request.spendRequestId, request);
+      await this.putRequest(request);
       const ids = await this.readIndex();
       ids.push(request.spendRequestId);
       await this.writeIndex(ids);
@@ -139,25 +145,9 @@ export class SpendStore extends DurableObject<Env> {
       let current = maybeExpire(stored);
       current = applyTenantReauth(current, tenant);
       if (current !== stored) {
-        await this.ctx.storage.put(spendRequestId, current);
+        await this.putRequest(current);
       }
       return ok(current);
-    } catch (error) {
-      return fail(error);
-    }
-  }
-
-  async decide(
-    spendRequestId: string,
-    tenantId: string,
-    decision: SpendDecision,
-    opts: { decidedBy?: string; denyReason?: string; orderId?: string } = {},
-  ): Promise<StoreResult<SpendRequest>> {
-    try {
-      const current = unwrapStore(await this.getForTenant(spendRequestId, tenantId));
-      const next = applyDecision(current, decision, opts);
-      await this.ctx.storage.put(spendRequestId, next);
-      return ok(next);
     } catch (error) {
       return fail(error);
     }
@@ -170,7 +160,7 @@ export class SpendStore extends DurableObject<Env> {
     try {
       const current = unwrapStore(await this.getForTenant(spendRequestId, tenantId));
       const { request, result } = prepareHandoff(current);
-      await this.ctx.storage.put(spendRequestId, request);
+      await this.putRequest(request);
       return ok(result);
     } catch (error) {
       return fail(error);

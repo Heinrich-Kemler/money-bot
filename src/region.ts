@@ -2,7 +2,14 @@ import { SpendError } from "./errors.ts";
 
 export function merchantDomainFromUrl(url: string): string {
   const hostname = new URL(url).hostname.toLowerCase();
-  return hostname.startsWith("www.") ? hostname.slice(4) : hostname;
+  return normalizeMerchantDomain(hostname);
+}
+
+/** Lowercase, strip leading www. Works on a bare host or a URL. */
+export function normalizeMerchantDomain(domainOrUrl: string): string {
+  const raw = domainOrUrl.trim().toLowerCase();
+  const host = raw.includes("://") ? new URL(raw).hostname : raw;
+  return host.startsWith("www.") ? host.slice(4) : host;
 }
 
 /**

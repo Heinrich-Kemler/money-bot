@@ -1,18 +1,28 @@
 # Money Bot
 
-> **SCAFFOLD ONLY — not production.** Out-of-band Approve is **not implemented** (`POST /host/spend-decision` returns **501**). Do not use this Worker to move real money until a signed OOB assertion (passkey/PWA) is wired. The shopping agent cannot Approve or mark `PAID`.
+> **SCAFFOLD ONLY — not production.** Out-of-band Approve is **not implemented** (`POST /host/spend-decision` returns **501**). Do not use this Worker to move real money. The shopping agent cannot Approve or mark `PAID`.
 
-Public Cursor marketplace plugin so any user’s agent can pay for **UK/EU** online checkouts without putting card numbers in the model.
+Public Cursor marketplace plugin so an agent can request human approval for a **UK/EU** online checkout without putting card numbers in the model.
 
 **Package / id:** `money-bot`  
-**v0:** approval + checkout handoff only — **never show a raw PAN in chat**. Revolut Business connect is **optional** (not used).  
-**v1 (not built):** each tenant’s **own** Revolut Business account — document only; no connect, mint, or PCI PAN handling in this repo.
+**v0 (this repo):** approval-request + checkout **URL handoff** only. Revolut Business connect is **not implemented**.  
+**v1 (not built):** optional per-tenant Revolut Business virtual cards — document only; no connect, mint, or PAN handling here.
 
-Money Bot is a **technical agent**. It **never holds customer funds** and is not a card-issuing-as-a-service platform. Seek **FCA / KNF** (and local) advice before v1. This software is not a payment institution, e-money issuer, or regulated wallet.
+Money Bot is **software that requests approval and returns a URL**. It does not hold funds, issue cards, or provide regulated payment services. This is not a legal or PCI assessment.
 
-Stripe Link is region-locked for many EU users. Money Bot is the human-in-the-loop alternative.
+The internal “Spend Gate” metaphor is the state machine. The public name is **Money Bot**.
 
-The internal “Spend Gate” metaphor is this state machine. The public name is **Money Bot**.
+## Production agent tools (complete list)
+
+These are the **only** MCP tools registered in production. There is no `DEV_MODE` Approve tool.
+
+| Tool | Role |
+| --- | --- |
+| `request_spend` | `IDLE` → `PENDING`. Requires UK/EU merchant + https `checkoutUrl` on that domain. |
+| `get_spend_status` | Machine status + locked cart + `tenantConnection`. |
+| `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU`. Returns the locked `checkoutUrl` (**the money path**). |
+
+There is **no** `edit_spend_cap`, `report_checkout_outcome`, or `dev_set_spend_decision` tool.
 
 ## State machine
 
@@ -21,7 +31,7 @@ IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID
                                               → CHALLENGE → PAID | FAILED
                                               → FAILED
                ↘ DENIED | EXPIRED
-               ↘ REAUTH_REQUIRED   (90-day tenant re-consent; v1 Revolut)
+               ↘ REAUTH_REQUIRED   (planned v1 tenant re-consent)
 ```
 
 Tenant connection (exists from day one, unused in v0):
@@ -30,69 +40,65 @@ Tenant connection (exists from day one, unused in v0):
 NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 ```
 
-| Tool / path | Transition |
+| Path | Transition |
 | --- | --- |
 | (no request) | `IDLE` |
 | `request_spend` | `IDLE` → `PENDING` |
-| **Signed OOB** Approve (passkey/PWA) — **not implemented, HTTP 501** | `PENDING` → `APPROVED` — locks amount + merchant + domain + shipping. Token **must bind `lockedCartFingerprint`**. Raw `decidedBy` is rejected. |
+| **Signed OOB** Approve — **not implemented, HTTP 501** | `PENDING` → `APPROVED` — re-snapshots amount + merchant + domain + **checkoutUrl** + shipping. Token **must bind `lockedCartFingerprint`**. Raw `decidedBy` is rejected. `tenantId` is never taken from a request body. |
 | Human Deny (same signed assertion) | `PENDING` → `DENIED` (terminal) |
-| Pending TTL | `PENDING` → `EXPIRED` (terminal) |
-| `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU` — requires https `checkoutUrl` on the locked merchant domain |
+| Pending TTL | `PENDING` → `EXPIRED` (terminal; also enters the retry cooldown) |
+| `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU` — opens **only** the locked https `checkoutUrl` (host = `merchantDomain`) |
 | `get_spend_status` | Full status + `tenantConnection` |
-| Host/OOB checkout outcome — **not an agent tool** | `WAITING_FOR_YOU` → `PAID` / `CHALLENGE` / `FAILED` |
-| 90-day Revolut re-consent (v1-bound only) | → `REAUTH_REQUIRED` until the connect **wizard** completes |
+| Host/OOB checkout outcome — **not an agent tool, HTTP 501** | `WAITING_FOR_YOU` → `PAID` / `CHALLENGE` / `FAILED` |
 
-A chat control may only **initiate** Approve. The **agent must never press Approve** (Ramp-style segregation of duties). `report_checkout_outcome` and `edit_spend_cap` are **not** on the agent MCP surface.
+A chat control may only **initiate** Approve. The **agent must never press Approve**.
 
-Deny and expire are terminal. A cart mismatch opens a **new PENDING** and **cancels** the previous `APPROVED` lock (`FAILED` + `supersededBySpendRequestId`). Deny retries match merchant domain + currency + amount within £/€0.50 (blocks ±£0.01).
+`checkoutUrl` is the **money path**. It is locked to `merchantDomain` at request time, re-validated at Approve, and the only URL handoff will open. Never fall back to `merchantUrl`. A cart mismatch opens a **new PENDING** and **cancels** the previous `APPROVED` lock (`FAILED` + `supersededBySpendRequestId`).
 
-v0 merchants must be **UK/EU domains** and **GBP/EUR**. Other regions return a clear error.
+Deny/expire retries match merchant domain (www-normalized) + currency + amount within £/€0.50 for 24h, plus cart fingerprint and lineage.
 
-## Product
+v0 merchants must be **UK/EU-looking domains** (public-suffix allowlist) and **GBP/EUR**. Other regions return a clear error. This is a heuristic, not a legal geo check.
+
+If a `spendCap` is set, it must be **≥ amount**.
+
+## Product (intent — not shipped)
 
 | | v0 (this repo) | v1 (docs only) |
 | --- | --- | --- |
-| Who pays | Human, on the merchant checkout | Human-approved **virtual** card from **their** Revolut Business — never a pooled float |
-| Revolut | Optional; not required | Per-tenant cert + `client_id` + JWT + Enable access. **No public OAuth.** Wizard, not one-tap. Access token ~40m; **90-day re-consent** → `REAUTH_REQUIRED` |
-| What the agent sees | Spend id, amount, merchant, checkout URL, state | Same — **never** PAN/CVC/expiry |
-| Approve | Out-of-band only | Same |
-| PCI | Never touches PAN → **out of CDE** | PAN fetch = **SAQ D** unless a PCI vault/iframe (Basis Theory / VGS / Skyflow). **Never store CVV post-auth.** |
+| Who pays | Human, on the merchant’s own checkout page | Planned: human-approved virtual card from **their** Revolut Business — never a pooled float |
+| Revolut | Not connected | Planned wizard (cert + `client_id` + JWT + Enable access). **No public OAuth.** Token ~40m; **~90-day re-consent** |
+| What the agent sees | Spend id, amount, merchant, locked checkout URL, state | Same — never PAN/CVC/expiry |
+| Approve | Out-of-band only; **not wired** | Same |
+| Card data | v0 does not fetch or store PAN. That is a **design goal**, not a QSA “out of CDE” certification. | Any future PAN fetch would need a PCI program (likely SAQ D unless a vault/iframe). Not assessed. |
 
-**Never use Revolut Merchant API** (wrong direction). Personal Revolut has no card-issue API. There is **no card-issuing-as-a-service**.
-
-### Checkout handoff (v0)
-
-- **Apple Pay** on desktop Safari: payment sheet. On desktop **non-Safari**: human scans a QR with iPhone (**iOS 18+**), about **30 seconds**.
-- **Revolut Pay**: QR + in-app approve when the merchant supports it; otherwise Apple Pay fallback.
-- **SCA / 3DS** is still live in the UK (~£25) and EU (~€30). If a challenge appears, move to **CHALLENGE**. Amex SafeKey ~**4 min**; Revolut 3DS ~**5 min**.
+Money Bot does not implement Apple Pay, Revolut Pay, or 3-D Secure. Those, if they appear, are the **merchant page’s** UI after the human opens the locked URL.
 
 ### v1 Revolut Business (do not implement)
 
-Virtual cards only. Single-transaction + one periodic limit. Freeze/terminate after capture or fail. `TransactionCreated` webhook. Sensitive data: `READ_SENSITIVE_CARD_DATA` + IP allowlist. Prefer a PCI vault/iframe over Worker-side PAN.
+Virtual cards only. Single-transaction + one periodic limit. Freeze/terminate after capture or fail. Never store CVV. Prefer a PCI vault/iframe over Worker-side PAN if that path is ever built.
 
 ## Cursor / MCP Apps
 
-Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must also ship a **mandatory plain-text fallback** (tool results + this skill) so hosts without MCP Apps still work. Cursor marketplace listing is **manual review**.
+Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must also ship a **mandatory plain-text fallback** (tool results + this skill). Cursor marketplace listing is **manual review**.
 
 ## v0 agent flow
 
-1. Fill the merchant cart (amount, merchant URL/domain, shipping).
+1. Fill the merchant cart (amount, merchant URL/domain, shipping, **checkout URL**).
 2. `request_spend` → `{ status: "PENDING", spendRequestId, lockedCart, … }`.
 3. Tell the human to Approve **out-of-band** (phone passkey/PWA). A chat button only starts that flow. **Do not click Approve yourself.**  
-   **TODO(host-approval-bridge):** signed OOB JWT/HMAC → `POST /host/spend-decision` (**501**, contract on `/`). Claims must include `tenantId`, `spendRequestId`, `decision`, and **`lockedCartFingerprint`**. Never `decidedBy: "human"` alone.
+   **TODO(host-approval-bridge):** signed OOB JWT/HMAC → `POST /host/spend-decision` (**501**, contract on `/`). Claims must include `tenantId`, `spendRequestId`, `decision`, and **`lockedCartFingerprint`**. Never `decidedBy: "human"` alone. Never take `tenantId` from the JSON body.
 4. `get_spend_status` until `APPROVED`, `DENIED`, `EXPIRED`, or `REAUTH_REQUIRED`.
-5. `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Hand the screen to the human. Never show a raw PAN. Do **not** mark `PAID`.
+5. `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Hand the human the locked `checkoutUrl` only. Never show a raw PAN. Do **not** mark `PAID`.
 
 ## Security summary
 
 See [SECURITY.md](SECURITY.md):
 
-1. Human OOB approval every spend (`AUTO_APPROVE_MAX = 0`). Agent cannot Approve.
+1. Human OOB approval every spend (`AUTO_APPROVE_MAX = 0`). Agent cannot Approve. Decide endpoints are 501.
 2. Never put PAN/CVC/expiry in chat, memory, transcripts, or tool results.
-3. Secrets only in vault / per-tenant cert+JWT (v1). **No public Revolut OAuth.**
-4. No pooled funds; no card-issuing-as-a-service.
-5. Deny / expire are terminal; `REAUTH_REQUIRED` after 90 days on a connected tenant.
-6. v0 out of CDE; v1 SAQ D unless vault/iframe; never store CVV post-auth.
+3. No public Revolut OAuth. No pooled funds.
+4. Deny / expire are terminal and share a retry cooldown.
+5. Observability invocation logs / traces are **off** so request bodies are not shipped to Workers Logs.
 
 ## Layout
 
@@ -109,25 +115,17 @@ plugin/
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars   # DEV_MODE=true is a local test hook only
+cp .dev.vars.example .dev.vars
 npm run type-check
 npm test
 npm start                        # wrangler dev — MCP at http://localhost:8787/mcp
 ```
 
-### MCP tools (v0 agent surface)
-
-| Tool | Role |
-| --- | --- |
-| `request_spend` | `IDLE` → `PENDING` (UK/EU + https checkout URL on the same domain) |
-| `get_spend_status` | Machine status + locked cart + `tenantConnection` |
-| `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU`; no credentials |
-
-`dev_set_spend_decision` exists only when `DEV_MODE=true` (local scaffold hook). Production Approve is **501** until a signed OOB assertion exists.
+There is no local “flip this flag to Approve” switch. Unit tests call the state-machine helper with a simulated verified assertion. HTTP decide stays 501.
 
 ## Disclaimer
 
-Money Bot is software that helps an agent request human approval and hand off a merchant checkout. It does not hold funds, issue cards, or provide regulated payment services. Obtain FCA (UK), KNF (PL), and other local advice before v1.
+Money Bot is a scaffold. It does not hold funds, issue cards, or provide regulated payment services. Obtain local regulatory advice before any production or v1 work. Mention of FCA / KNF is a reminder to seek advice — not a claim that this software is authorised or assessed.
 
 ## License
 
