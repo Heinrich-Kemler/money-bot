@@ -11,7 +11,8 @@
     "cf-typegen": "wrangler types",
     "type-check": "tsc --noEmit",
     "test": "node --experimental-strip-types --test src/*.test.ts",
-    "smoke:approve": "bash scripts/smoke-approve.sh"
+    "smoke:approve": "bash scripts/smoke-approve.sh",
+    "smoke:widget-approve": "bash scripts/smoke-widget-approve.sh"
   },
   "keywords": [
     "money-bot",

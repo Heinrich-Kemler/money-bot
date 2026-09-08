@@ -5,6 +5,7 @@ import { SpendError } from "../logic.ts";
 import { errorToolResult, jsonToolResult } from "../sanitize.ts";
 import { spendStoreForTenant } from "../store.ts";
 import type { ToolContext } from "../types.ts";
+import { grokbotWidgetForPending } from "../widget.ts";
 
 export function registerGetSpendStatus(
   server: McpServer,
@@ -15,8 +16,9 @@ export function registerGetSpendStatus(
     {
       description:
         "Return the full spend-request status using the Money Bot state machine: " +
-        "PENDING | APPROVED | WAITING_FOR_YOU | PAID | CHALLENGE | FAILED | DENIED | EXPIRED | REAUTH_REQUIRED. " +
-        "Includes locked cart, tenantConnection (90-day re-consent), and audit fields. Never returns payment credentials.",
+        "PENDING | APPROVED | WAITING_FOR_YOU | PAID | CHALLENGE | FAILED | DENIED | EXPIRED | CANCELLED | REAUTH_REQUIRED. " +
+        "While PENDING, includes a human-only `widget` (Approve / Reject / Keep looking) " +
+        "and approveUrl (local smoke only). Never returns payment credentials.",
       inputSchema: getSpendStatusInputSchema,
     },
     async ({ spendRequestId }) => {
@@ -33,10 +35,14 @@ export function registerGetSpendStatus(
           request.status === "PENDING"
             ? await buildApproveUrl(ctx.env, request.spendRequestId, ctx.tenantId)
             : undefined;
+        const widget = grokbotWidgetForPending(request);
         return jsonToolResult({
           spendRequestId: request.spendRequestId,
           status: request.status,
           approveUrl,
+          approveUrlLocalSmokeOnly: true,
+          widget,
+          lockedCartFingerprint: request.lockedCartFingerprint,
           tenantConnection,
           merchantName: request.merchantName,
           merchantUrl: request.merchantUrl,

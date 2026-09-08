@@ -31,7 +31,7 @@ export const requestSpendInputSchema = z.object({
   lineItems: z.array(lineItemSchema).max(50).optional(),
   shipping: shippingSchema.optional(),
   spendCap: z.number().positive().finite().optional(),
-  /** Explicit lock to cancel. Same-domain carts supersede without this. */
+  /** Explicit same-merchantDomain lock to cancel. Cross-domain supersedes are rejected. */
   supersedes: z.string().min(1).max(128).optional(),
 });
 

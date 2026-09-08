@@ -38,13 +38,13 @@ There is **no decide MCP tool**. That is not the same as “`approveUrl` is huma
 
 **First testable Approve (landed):** local HMAC-signed `GET /approve` page posts a server-minted JWT/HMAC to `POST /host/spend-decision`. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. `tenantId` comes from the assertion — **never** from a JSON body field. Never accept `decidedBy` alone. No `DEV_MODE` Approve switch. `approveUrl` is a bearer capability for local smoke / non-Grokbot only.
 
-**Product direction (design only):** first real use is **Grokbot / Life Admin shopping**. Approve should be a **human-only chat widget** (Approve / Reject, maybe “keep looking”) — same SoD as Grokbot question widgets. The agent may find products; only the user’s tap drives host decide. See [docs/design/grokbot-widget-approve.md](design/grokbot-widget-approve.md).
+**Grokbot widget (implemented):** `widget` on spend tools + `POST /host/widget-decision` (`Bearer host:<HOST_API_TOKEN>`). Keep looking → `CANCELLED` without deny cooldown. SoD depends on Life Admin using that path, not the model fetching `approveUrl`. See [docs/design/grokbot-widget-approve.md](design/grokbot-widget-approve.md).
 
 **Long-term Cursor marketplace:** passkey / WebAuthn (or equivalent device binding) for bearer-URL N-1. Not implemented in this repo yet.
 
 Open:
 
-- Life Admin widget integration (host-verified assertion; agent must not fetch `approveUrl`).
+- Life Admin agent-code wiring (host API + smoke guide are ready; they are a separate bot).
 - Passkey / WebAuthn provider and device binding to `tenantId`.
 - How MCP Apps starts the OOB flow without giving the model a decide tool.
 - Production host identity (`props.userId`) — see issue #4. Local tests use `ALLOW_TEST_AUTH` only when `ENVIRONMENT=development` on loopback.

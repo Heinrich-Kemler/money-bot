@@ -1,10 +1,15 @@
 import { handleApprovePage } from "./approve-page.ts";
 import { handleSpendDecision } from "./host-decision.ts";
+import { handleWidgetDecision } from "./widget-decision.ts";
 import { gateMcpFetch } from "./mcp-auth.ts";
 import { MoneyBotMCP } from "./mcp.ts";
 import { SpendStore } from "./store.ts";
 import { assertTestAuthAllowedForEnv } from "./test-auth.ts";
-import { AGENT_MCP_TOOLS, OOB_ASSERTION_CONTRACT } from "./types.ts";
+import {
+  AGENT_MCP_TOOLS,
+  OOB_ASSERTION_CONTRACT,
+  WIDGET_ASSERTION_CONTRACT,
+} from "./types.ts";
 import { TestAuthConfigError } from "./errors.ts";
 
 export { MoneyBotMCP, SpendStore };
@@ -64,6 +69,10 @@ export default {
       return handleSpendDecision(request, env);
     }
 
+    if (url.pathname === "/host/widget-decision" && request.method === "POST") {
+      return handleWidgetDecision(request, env);
+    }
+
     if (url.pathname === "/host/checkout-outcome" && request.method === "POST") {
       // C1: payment outcome is host/OOB only — not implemented in v0.
       void request.body;
@@ -102,14 +111,16 @@ export default {
         notPasskey: true,
         mcp: "/mcp",
         approve: "/approve",
+        widgetDecision: "/host/widget-decision",
         stateMachine:
-          "IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED (+ DENIED | EXPIRED | REAUTH_REQUIRED)",
+          "IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED (+ DENIED | EXPIRED | CANCELLED | REAUTH_REQUIRED)",
         tools: [...AGENT_MCP_TOOLS],
-        approval: "local_hmac_signed_browser_approve",
+        approval: "grokbot_widget_or_local_hmac",
         revolut: "optional_in_v0",
         autoApproveMax: 0,
         v1: "not_implemented",
         oobAssertionContract: OOB_ASSERTION_CONTRACT,
+        widgetAssertionContract: WIDGET_ASSERTION_CONTRACT,
       });
     }
 

@@ -1,21 +1,29 @@
 import { HostDecisionError } from "./errors.ts";
-import { DECISIONS, type SpendDecision } from "./types.ts";
+import {
+  DECISIONS,
+  WIDGET_DECISIONS,
+  type SpendDecision,
+  type WidgetDecision,
+} from "./types.ts";
 
 export const OOB_ISS = "money-bot-oob";
+export const WIDGET_ISS = "grokbot-widget";
 export const OOB_AUD = "money-bot";
 export const ASSERTION_TTL_SECONDS = 10 * 60;
 export const CLOCK_SKEW_SECONDS = 30;
 export const MIN_HMAC_SECRET_LENGTH = 16;
 
+export type AssertionIssuer = typeof OOB_ISS | typeof WIDGET_ISS;
+
 export type ApprovalClaims = {
-  iss: typeof OOB_ISS;
+  iss: AssertionIssuer;
   aud: typeof OOB_AUD;
   exp: number;
   iat: number;
   jti: string;
   spendRequestId: string;
   tenantId: string;
-  decision: SpendDecision;
+  decision: SpendDecision | "keep_looking";
   lockedCartFingerprint: string;
 };
 
@@ -53,6 +61,18 @@ function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean {
     diff |= a[i]! ^ b[i]!;
   }
   return diff === 0;
+}
+
+/** Constant-time string compare (length mismatch still returns false). */
+export function timingSafeEqualString(a: string, b: string): boolean {
+  const left = textEncode(a);
+  const right = textEncode(b);
+  const max = Math.max(left.length, right.length, 1);
+  const leftPad = new Uint8Array(max);
+  const rightPad = new Uint8Array(max);
+  leftPad.set(left);
+  rightPad.set(right);
+  return timingSafeEqual(leftPad, rightPad) && left.length === right.length;
 }
 
 export function requireApprovalSecret(secret: string | undefined): string {
@@ -125,6 +145,17 @@ function isSpendDecision(value: unknown): value is SpendDecision {
   );
 }
 
+function isWidgetDecision(value: unknown): value is WidgetDecision {
+  return (
+    typeof value === "string" &&
+    (WIDGET_DECISIONS as readonly string[]).includes(value)
+  );
+}
+
+export function isAssertionIssuer(value: unknown): value is AssertionIssuer {
+  return value === OOB_ISS || value === WIDGET_ISS;
+}
+
 function parseClaims(raw: unknown, now = new Date()): ApprovalClaims {
   if (!raw || typeof raw !== "object") {
     throw new HostDecisionError(
@@ -152,9 +183,9 @@ function parseClaims(raw: unknown, now = new Date()): ApprovalClaims {
       "bad_assertion",
     );
   }
-  if (c.iss !== OOB_ISS) {
+  if (!isAssertionIssuer(c.iss)) {
     throw new HostDecisionError(
-      `Approval assertion iss must be "${OOB_ISS}".`,
+      `Approval assertion iss must be "${OOB_ISS}" or "${WIDGET_ISS}".`,
       401,
       "bad_assertion",
     );
@@ -192,12 +223,24 @@ function parseClaims(raw: unknown, now = new Date()): ApprovalClaims {
       "bad_assertion",
     );
   }
-  if (!isSpendDecision(c.decision)) {
+  let decision: SpendDecision | "keep_looking";
+  if (c.iss === OOB_ISS) {
+    if (!isSpendDecision(c.decision)) {
+      throw new HostDecisionError(
+        'Approval assertion decision must be "approved" or "denied".',
+        401,
+        "bad_assertion",
+      );
+    }
+    decision = c.decision;
+  } else if (!isWidgetDecision(c.decision)) {
     throw new HostDecisionError(
-      'Approval assertion decision must be "approved" or "denied".',
+      'Widget assertion decision must be "approved", "denied", or "keep_looking".',
       401,
       "bad_assertion",
     );
+  } else {
+    decision = c.decision;
   }
   const nowSec = unixSeconds(now);
   if (c.exp + CLOCK_SKEW_SECONDS < nowSec) {
@@ -215,14 +258,14 @@ function parseClaims(raw: unknown, now = new Date()): ApprovalClaims {
     );
   }
   return {
-    iss: OOB_ISS,
+    iss: c.iss,
     aud: OOB_AUD,
     exp: c.exp,
     iat: c.iat,
     jti: c.jti,
     spendRequestId: c.spendRequestId,
     tenantId: c.tenantId,
-    decision: c.decision,
+    decision,
     lockedCartFingerprint: c.lockedCartFingerprint,
   };
 }
@@ -231,15 +274,24 @@ export function buildApprovalClaims(
   input: {
     spendRequestId: string;
     tenantId: string;
-    decision: SpendDecision;
+    decision: SpendDecision | "keep_looking";
     lockedCartFingerprint: string;
     ttlSeconds?: number;
+    iss?: AssertionIssuer;
   },
   at = new Date(),
 ): ApprovalClaims {
+  const iss = input.iss ?? OOB_ISS;
+  if (iss === OOB_ISS && input.decision === "keep_looking") {
+    throw new HostDecisionError(
+      "OOB assertions cannot carry keep_looking; use iss=grokbot-widget.",
+      400,
+      "bad_assertion",
+    );
+  }
   const iat = unixSeconds(at);
   return {
-    iss: OOB_ISS,
+    iss,
     aud: OOB_AUD,
     iat,
     exp: iat + (input.ttlSeconds ?? ASSERTION_TTL_SECONDS),
@@ -249,6 +301,19 @@ export function buildApprovalClaims(
     decision: input.decision,
     lockedCartFingerprint: input.lockedCartFingerprint,
   };
+}
+
+export function buildWidgetApprovalClaims(
+  input: {
+    spendRequestId: string;
+    tenantId: string;
+    decision: WidgetDecision;
+    lockedCartFingerprint: string;
+    ttlSeconds?: number;
+  },
+  at = new Date(),
+): ApprovalClaims {
+  return buildApprovalClaims({ ...input, iss: WIDGET_ISS }, at);
 }
 
 export async function signApprovalJwt(

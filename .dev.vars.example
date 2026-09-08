@@ -17,6 +17,11 @@ ALLOW_TEST_AUTH=true
 # Generate your own for local use; never reuse in production.
 APPROVAL_HMAC_SECRET=dev-only-hmac-secret-change-me
 
+# Life Admin / Grokbot host widget decide (POST /host/widget-decision).
+# Authorization: Bearer host:<HOST_API_TOKEN>
+# Never give this to the agent. Production must set this (fail closed if unset).
+HOST_API_TOKEN=dev-only-host-api-token-change-me
+
 # Origin used when tools return approveUrl (wrangler dev default).
 PUBLIC_BASE_URL=http://localhost:8787
 

@@ -15,13 +15,13 @@ export function registerRequestSpend(
     {
       description:
         "Create a PENDING spend request from IDLE after the cart is filled. " +
-        "autoApproveMax is £0. Returns approveUrl for local smoke / non-Grokbot " +
-        "browser Approve (HMAC page; bearer capability, not human proof). " +
-        "There is no decide MCP tool. On Grokbot/Life Admin the host shows a " +
-        "human-only Approve/Reject widget — do not fetch or POST approveUrl. " +
-        "checkoutUrl is the money path and must be https on the merchant domain. " +
-        "Same-merchant locks may be superseded; other shops' APPROVED locks are not. " +
-        "Never include payment credentials.",
+        "autoApproveMax is £0. Returns a `widget` object (Approve / Reject / " +
+        "Keep looking) for Grokbot/Life Admin to render as a human-only card. " +
+        "Also returns approveUrl for local smoke only (HMAC page; bearer " +
+        "capability, not human proof — do not fetch or POST it). " +
+        "There is no decide MCP tool. checkoutUrl is the money path and must " +
+        "be https on the merchant domain. Agent supersedes must be " +
+        "same-merchantDomain. Never include payment credentials.",
       inputSchema: requestSpendInputSchema,
     },
     async (input) => {

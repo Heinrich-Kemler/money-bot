@@ -87,6 +87,13 @@ describe("request_spend result", () => {
     assert.equal(result.lockedCart.shipping?.postalCode, "SW1A 1AA");
     assert.ok(result.spendRequestId.startsWith("sr_"));
     assert.equal("checkoutUrl" in result, false);
+    assert.equal(result.approveUrlLocalSmokeOnly, true);
+    assert.deepEqual(result.widget.options, [
+      "Approve",
+      "Reject",
+      "Keep looking",
+    ]);
+    assert.equal(result.widget.checkoutUrl, result.lockedCart.checkoutUrl);
   });
 
   it("rejects non-UK/EU merchant domains", () => {

@@ -18,8 +18,9 @@ invocation_logs = false
 enabled = false
 
 # Hard security: never auto-approve. Value is documented and ignored if raised.
-# Secrets (APPROVAL_HMAC_SECRET, future Revolut wizard creds) MUST be set via
-# `wrangler secret` / .dev.vars — never commit them here.
+# Secrets (APPROVAL_HMAC_SECRET, HOST_API_TOKEN, future Revolut wizard creds)
+# MUST be set via `wrangler secret` / .dev.vars — never commit them here.
+# HOST_API_TOKEN is required for POST /host/widget-decision (fail closed if unset).
 # DEV_MODE does not exist: flipping a boolean must never enable Approve.
 # ALLOW_TEST_AUTH must stay unset here. If it is set while ENVIRONMENT is
 # production, the Worker refuses to serve (N-3). wrangler dev overrides
