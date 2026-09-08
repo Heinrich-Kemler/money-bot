@@ -258,20 +258,18 @@ describe("production path fails closed without userId", () => {
     );
   });
 
-  it("populates userId only when ALLOW_TEST_AUTH=true", () => {
+  it("populates userId only when ALLOW_TEST_AUTH=true on local development", () => {
     const request = new Request("http://localhost/mcp", {
       headers: { Authorization: "Bearer test:local-user" },
     });
-    assert.equal(
-      resolveTestUserId(request, { ALLOW_TEST_AUTH: "true" }),
-      "local-user",
-    );
+    const local = { ALLOW_TEST_AUTH: "true", ENVIRONMENT: "development" };
+    assert.equal(resolveTestUserId(request, local), "local-user");
     assert.equal(
       resolveTestUserId(
         new Request("http://localhost/mcp", {
           headers: { Authorization: "Bearer test:anonymous" },
         }),
-        { ALLOW_TEST_AUTH: "true" },
+        local,
       ),
       undefined,
     );

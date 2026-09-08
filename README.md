@@ -38,9 +38,9 @@ This is a **browser page** that posts a **server-minted** HS256 JWT / HMAC asser
    npm start                        # wrangler dev — http://localhost:8787
    ```
 
-2. Local MCP identity (`ALLOW_TEST_AUTH=true` in `.dev.vars` only): send  
+2. Local MCP identity (`ALLOW_TEST_AUTH=true` **and** `ENVIRONMENT=development` in `.dev.vars` only): send  
    `Authorization: Bearer test:<userId>`  
-   Production `wrangler.toml` leaves `ALLOW_TEST_AUTH` **unset** (default false). Missing `userId` **fails closed**.
+   Production `wrangler.toml` sets `ENVIRONMENT=production` and **must not** set `ALLOW_TEST_AUTH`. If `ALLOW_TEST_AUTH=true` is ever present on that production path, the Worker **refuses to start serving** (HTTP 500). Even in development, test auth is honored only on `localhost` / `127.0.0.1`. Missing `userId` **fails closed** (MCP `initialize` / `tools/list` / `tools/call` are **401** and do not allocate tenant Durable Objects).
 
 3. Call `request_spend` for a fake UK/EU merchant (GBP + allowlisted domain + `https` `checkoutUrl` on that host).
 
@@ -81,17 +81,17 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 | (no request) | `IDLE` |
 | `request_spend` | `IDLE` → `PENDING` + `approveUrl` |
 | **Signed OOB** Approve (`GET /approve` → `POST /host/spend-decision`) | `PENDING` → `APPROVED` — re-snapshots amount + merchant + domain + **checkoutUrl** + shipping. Token **must bind `lockedCartFingerprint`**. Raw `decidedBy` is rejected. `tenantId` is never taken from a request body. |
-| Human Deny (same signed assertion) | `PENDING` → `DENIED` (terminal) |
-| Pending TTL | `PENDING` → `EXPIRED` (terminal; also enters the retry cooldown) |
+| Human Deny (same signed assertion) | `PENDING` → `DENIED` (terminal; 24h same-domain cooldown) |
+| Pending TTL | `PENDING` → `EXPIRED` (terminal; **no** human-deny cooldown — a new same-cart request is allowed) |
 | `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU` — opens **only** the locked https `checkoutUrl` (host = `merchantDomain`) |
 | `get_spend_status` | Full status + `tenantConnection` |
 | Host/OOB checkout outcome — **not an agent tool, HTTP 501** | `WAITING_FOR_YOU` → `PAID` / `CHALLENGE` / `FAILED` |
 
-Tool results return `approveUrl` so a human *or* a local smoke client can finish Approve. That URL is a bearer capability, not human proof. The agent still has **no decide MCP tool**.
+Tool results return `approveUrl` so a human *or* a local smoke client can finish Approve. That URL is a bearer capability, not human proof. **No decide MCP tool ≠ approveUrl is human-proof.** Grokbot/Life Admin should use a human-only host widget ([design note](docs/design/grokbot-widget-approve.md)); that path must not rely on the agent fetching `approveUrl`.
 
-`checkoutUrl` is the **money path**. It is locked to `merchantDomain` at request time, re-validated at Approve, and the only URL handoff will open. Never fall back to `merchantUrl`. A cart mismatch opens a **new PENDING** and **cancels** the previous `APPROVED` lock (`FAILED` + `supersededBySpendRequestId`).
+`checkoutUrl` is the **money path**. It is locked to `merchantDomain` at request time, re-validated at Approve, and the only URL handoff will open. Never fall back to `merchantUrl`. A **same-merchant** cart mismatch (or explicit `supersedes`) opens a **new PENDING** and **cancels** that shop’s previous lock (`FAILED` + `supersededBySpendRequestId`). A request at a **different** merchant leaves the other shop’s `APPROVED` / `WAITING_FOR_YOU` lock intact.
 
-Deny/expire retries match merchant domain (www-normalized) + currency + amount within £/€0.50 for 24h, plus cart fingerprint and lineage.
+Human **Deny** retries match merchant domain (www-normalized) + currency + amount within £/€0.50 for 24h, plus cart fingerprint and lineage. **`EXPIRED` (timeout) does not** start that cooldown.
 
 v0 merchants must be **UK/EU-looking domains** (public-suffix allowlist) and **GBP/EUR**. Other regions return a clear error. This is a heuristic, not a legal geo check.
 
@@ -121,7 +121,7 @@ Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must
 
 1. Fill the merchant cart (amount, merchant URL/domain, shipping, **checkout URL**).
 2. `request_spend` → `{ status: "PENDING", spendRequestId, lockedCart, approveUrl, … }`.
-3. Give the human `approveUrl` (intended browser path). Treat it as a bearer capability: fetching/posting it completes Approve/Deny. The agent has no decide tool; this still does **not** prove a human clicked.
+3. Give the human `approveUrl` (intended **local** browser path) or wait for the Life Admin widget. Treat `approveUrl` as a bearer capability: fetching/posting it completes Approve/Deny. **No decide MCP tool ≠ approveUrl is human-proof.**
 4. `get_spend_status` until `APPROVED`, `DENIED`, `EXPIRED`, or `REAUTH_REQUIRED`.
 5. `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Hand the human the locked `checkoutUrl` only. Never show a raw PAN. Do **not** mark `PAID`.
 
@@ -129,13 +129,13 @@ Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must
 
 See [SECURITY.md](SECURITY.md):
 
-1. `AUTO_APPROVE_MAX = 0`. No decide MCP tool. Local `approveUrl` is a bearer capability (not human proof; passkey/WebAuthn remains TODO).
+1. `AUTO_APPROVE_MAX = 0`. No decide MCP tool. Local `approveUrl` is a bearer capability (not human proof; Grokbot widget + passkey/WebAuthn remain TODO).
 2. `POST /host/spend-decision` verifies a signed JWT/HMAC (`iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, `lockedCartFingerprint`) and calls `applyDecision` only with `assertionVerified: true`.
 3. Never put PAN/CVC/expiry in chat, memory, transcripts, or tool results.
 4. No public Revolut OAuth. No pooled funds.
-5. Deny / expire are terminal and share a retry cooldown.
+5. Human Deny is terminal and has a 24h cooldown. `EXPIRED` is terminal but does **not** share that cooldown.
 6. Observability invocation logs / traces are **off** so request bodies are not shipped to Workers Logs.
-7. Production MCP without `props.userId` fails closed. `ALLOW_TEST_AUTH` is local-only.
+7. Production MCP without `props.userId` fails closed at the edge (no tenant DO). `ALLOW_TEST_AUTH` is impossible/inert on the production `wrangler.toml` path.
 
 ## Layout
 
@@ -143,6 +143,7 @@ See [SECURITY.md](SECURITY.md):
 README.md
 SECURITY.md
 docs/open-questions.md
+docs/design/grokbot-widget-approve.md
 src/   # request_spend, get_spend_status, prepare_checkout_handoff
 scripts/smoke-approve.sh
 skills/money-bot/SKILL.md

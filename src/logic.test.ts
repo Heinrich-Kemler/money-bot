@@ -142,7 +142,7 @@ describe("deny is final", () => {
     assert.equal(penny?.spendRequestId, denied.spendRequestId);
   });
 
-  it("includes EXPIRED in the cooldown and normalizes www", () => {
+  it("does not apply the human-deny cooldown to EXPIRED (N-5)", () => {
     const expired = maybeExpire(
       pending({
         expiresAt: new Date(Date.now() - 1000).toISOString(),
@@ -154,7 +154,17 @@ describe("deny is final", () => {
       amount: 12.5,
       currency: "GBP",
     });
-    assert.equal(blocked?.spendRequestId, expired.spendRequestId);
+    assert.equal(blocked, undefined);
+  });
+
+  it("still normalizes www for a human DENIED cooldown", () => {
+    const denied = applyDecision(pending(), "denied", oob);
+    const blocked = isRetryOfDenied([denied], {
+      merchantDomain: "www.shop.example.co.uk",
+      amount: 12.5,
+      currency: "GBP",
+    });
+    assert.equal(blocked?.spendRequestId, denied.spendRequestId);
   });
 });
 

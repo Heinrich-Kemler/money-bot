@@ -9,3 +9,8 @@ export function requireTenantId(userId: string | undefined | null): string {
   }
   return trimmed;
 }
+
+/** Canonical SpendStore id. Throws before idFromName when tenantId is missing. */
+export function tenantDurableObjectName(tenantId: string): string {
+  return `tenant:${requireTenantId(tenantId)}`;
+}

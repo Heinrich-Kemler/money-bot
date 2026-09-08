@@ -34,17 +34,20 @@ Open: whether a vault/iframe is a prerequisite before any Worker-side PAN is eve
 
 ## Out-of-band Approve (SoD)
 
-Chat may only **initiate** Approve. Completion is planned as **phone passkey / PWA**. The **agent must never press Approve**.
+There is **no decide MCP tool**. That is not the same as “`approveUrl` is human-proof.”
 
-**First testable Approve (landed):** local HMAC-signed `GET /approve` page posts a server-minted JWT/HMAC to `POST /host/spend-decision`. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. `tenantId` comes from the assertion — **never** from a JSON body field. Never accept `decidedBy` alone. No `DEV_MODE` Approve switch.
+**First testable Approve (landed):** local HMAC-signed `GET /approve` page posts a server-minted JWT/HMAC to `POST /host/spend-decision`. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. `tenantId` comes from the assertion — **never** from a JSON body field. Never accept `decidedBy` alone. No `DEV_MODE` Approve switch. `approveUrl` is a bearer capability for local smoke / non-Grokbot only.
 
-This is **not** passkey/WebAuthn.
+**Product direction (design only):** first real use is **Grokbot / Life Admin shopping**. Approve should be a **human-only chat widget** (Approve / Reject, maybe “keep looking”) — same SoD as Grokbot question widgets. The agent may find products; only the user’s tap drives host decide. See [docs/design/grokbot-widget-approve.md](design/grokbot-widget-approve.md).
+
+**Long-term Cursor marketplace:** passkey / WebAuthn (or equivalent device binding) for bearer-URL N-1. Not implemented in this repo yet.
 
 Open:
 
+- Life Admin widget integration (host-verified assertion; agent must not fetch `approveUrl`).
 - Passkey / WebAuthn provider and device binding to `tenantId`.
 - How MCP Apps starts the OOB flow without giving the model a decide tool.
-- Production host identity (`props.userId`) — see issue #4. Local tests use `ALLOW_TEST_AUTH`.
+- Production host identity (`props.userId`) — see issue #4. Local tests use `ALLOW_TEST_AUTH` only when `ENVIRONMENT=development` on loopback.
 
 ## MCP Apps + marketplace
 

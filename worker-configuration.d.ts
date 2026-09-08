@@ -3,8 +3,15 @@ interface Env {
   SPEND_STORE: DurableObjectNamespace<import("./src/store").SpendStore>;
   AUTO_APPROVE_MAX: string;
   /**
+   * wrangler.toml deploy path is "production". Local `.dev.vars` must set
+   * "development" (or "local" / "dev") before ALLOW_TEST_AUTH can be honored.
+   */
+  ENVIRONMENT: string;
+  /**
    * Local-only. Production wrangler.toml must leave this unset (default false).
-   * When "true", `Authorization: Bearer test:<userId>` populates MCP props.userId.
+   * When "true" *and* ENVIRONMENT is development/local *and* Host is loopback,
+   * `Authorization: Bearer test:<userId>` populates MCP props.userId.
+   * If this is "true" on the production ENVIRONMENT, the Worker fails closed.
    */
   ALLOW_TEST_AUTH?: string;
   /** HMAC/JWT secret used to mint and verify Approve assertions. Never commit. */

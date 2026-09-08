@@ -31,10 +31,10 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 - **`checkoutUrl` is the money path.** Locked to `merchantDomain` at `request_spend`, re-snapshotted at Approve, and the only URL `prepare_checkout_handoff` will return. Host ≠ lock → reject. No `merchantUrl` fallback.
 - Approve **locks the cart**: amount + merchant + domain + checkoutUrl + shipping. OOB token **must bind `lockedCartFingerprint`**.
-- **Local first-test Approve** is `GET /approve` → `POST /host/spend-decision` (HMAC). `approveUrl` is a **bearer capability**: possession of the URL (human, agent, or smoke script) can complete Approve/Deny by fetching/posting it. Acceptable for local first test only. This does **not** prove a human acted. **TODO:** passkey/WebAuthn / out-of-band device auth.
-- The agent has **no decide MCP tool**. That is the SoD control that holds today — not “the URL is unusable by the agent.”
+- **Local first-test Approve** is `GET /approve` → `POST /host/spend-decision` (HMAC). `approveUrl` is a **bearer capability**: possession of the URL (human, agent, or smoke script) can complete Approve/Deny by fetching/posting it. Acceptable for local first test only. This does **not** prove a human acted. **TODO:** Grokbot/Life Admin human-only widget ([design](docs/design/grokbot-widget-approve.md)); passkey/WebAuthn for public Cursor marketplace.
+- The agent has **no decide MCP tool**. That is **not** the same as “`approveUrl` is human-proof.”
 - Host decide verifies a signed assertion (`OOB_ASSERTION_CONTRACT` in `src/types.ts`) and calls `applyDecision` only with `assertionVerified: true`. Outcome remains **501**. No `DEV_MODE` Approve switch.
-- `DENIED` and `EXPIRED` are terminal from `PENDING` and share the retry cooldown.
+- `DENIED` and `EXPIRED` are terminal from `PENDING`. Only a **human Deny** starts the 24h retry cooldown. `EXPIRED` (timeout) does not.
 - If `spendCap` is present, it must be ≥ amount. Cap edits (host-only helper) never grant approval.
 
 ## Trust boundaries
@@ -55,7 +55,7 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 | Zone | Trusted for | Not trusted for |
 | --- | --- | --- |
-| Agent / model | The three tools above | A **decide MCP tool**, PAN/CVC/expiry, secrets, self-approving a cart diff, marking `PAID`. (It *can* fetch/post `approveUrl` today — that is a local bearer gap, not human proof.) |
+| Agent / model | The three tools above; **finding products** | A **decide MCP tool**, PAN/CVC/expiry, secrets, cancelling another shop’s approved lock, marking `PAID`. (It *can* fetch/post `approveUrl` today — that is a local bearer gap, not human proof.) |
 | Chat / tool JSON | Returning `approveUrl` (bearer capability, local first test) | Claiming the click was a verified human |
 | Human device (OOB) | **TODO** passkey/WebAuthn / device auth; paying on the merchant page | Being implied by HMAC URL possession |
 | Worker + SpendStore | Spend state, cart lock, tenant **metadata** (no tokens) | Card minting, PAN, CVV, access JWTs |
@@ -79,8 +79,8 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 - `applyDecision` requires `assertionVerified`. Raw `decidedBy: "human"` is rejected. `decidedBy: "agent"` is rejected. Client-supplied actor strings are not stored.
 - Host decide verifies JWT/HMAC claims (`iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, `lockedCartFingerprint`). Body `tenantId` / `decidedBy` are ignored.
 - Missing/bad signature, expiry, fingerprint mismatch, and replayed `jti` are rejected.
-- Missing `props.userId` **fails closed** (no `"anonymous"` Durable Object).
-- `ALLOW_TEST_AUTH=true` + `Authorization: Bearer test:<userId>` is **local only**. Production `wrangler.toml` keeps this unset.
+- Missing `props.userId` **fails closed** at the MCP edge: `initialize` / `tools/list` / `tools/call` are 401 and do **not** allocate tenant Durable Objects (no `"anonymous"` ledger).
+- `ALLOW_TEST_AUTH=true` is **impossible or inert** on the production `wrangler.toml` path (`ENVIRONMENT=production`). If the flag is set there, the Worker returns 500 and never honors `Bearer test:…`. Local `.dev.vars` must set `ENVIRONMENT=development`; test auth is then honored only on loopback Host.
 
 **Residual (local first test only).** `approveUrl` is a **bearer capability**. Possession of the URL — including by the agent or the smoke script — can complete Approve/Deny by fetching the page and posting the server-minted assertion. That is acceptable for local first test. It does **not** prove a human acted. **TODO:** passkey/WebAuthn / out-of-band device auth.
 
@@ -91,7 +91,7 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 **Mitigations**
 
 - Only `POST /host/spend-decision` with a verified assertion can set `APPROVED`.
-- Deny/expire are terminal and share a cooldown.
+- Human Deny is terminal and has a 24h cooldown. `EXPIRED` is terminal without that cooldown.
 - Approval UI (when built) must show the **locked cart** from the spend record.
 
 ### 3. PAN exfiltration
@@ -106,13 +106,14 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 - Sanitize-on-write before Durable Object persistence.
 - Workers Logs **invocation logs and traces are disabled** so request bodies are not persisted to Cloudflare observability.
 
-### 4. Deny/expire-retry spam
+### 4. Deny-retry spam (not expire-poisoning)
 
-**Threat.** Agent re-requests after Deny or after TTL.
+**Threat.** Agent re-requests after a human Deny. (An agent-created spend that merely expires must not lock the human out for 24h.)
 
 **Mitigations**
 
-- `DENIED` / `EXPIRED` are terminal. 24h cooldown matches **normalized merchantDomain + currency + amount within £/€0.50**, plus locked-cart fingerprint and spend-request **lineage**.
+- `DENIED` is terminal. 24h cooldown matches **normalized merchantDomain + currency + amount within £/€0.50**, plus locked-cart fingerprint and spend-request **lineage**.
+- `EXPIRED` is terminal but **does not** enter that cooldown. A new same-cart `request_spend` after TTL is allowed.
 
 ### 5. Cross-tenant / pooled funds
 
@@ -138,7 +139,7 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 **Mitigations**
 
 - Locked cart includes `checkoutUrl`. Handoff refuses a swapped URL or a host ≠ `merchantDomain`.
-- Mismatch → new `PENDING` with `cartDiff`; previous lock **cancelled** (`FAILED` + `supersededBySpendRequestId`).
+- Same-`merchantDomain` mismatch (or explicit `supersedes`) → new `PENDING` with `cartDiff`; that lock **cancelled** (`FAILED` + `supersededBySpendRequestId`). A different merchant’s `APPROVED` / `WAITING_FOR_YOU` lock is left intact.
 
 ### 8. Log / transcript leakage
 
