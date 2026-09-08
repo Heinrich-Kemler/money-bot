@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ALLOWED_CURRENCIES } from "./region.ts";
 
 const httpsUrl = z
   .string()
@@ -25,7 +26,7 @@ export const requestSpendInputSchema = z.object({
   merchantName: z.string().min(1).max(200),
   merchantUrl: httpsUrl,
   amount: z.number().positive().finite(),
-  currency: z.enum(["GBP", "EUR"]).default("GBP"),
+  currency: z.enum(ALLOWED_CURRENCIES).default("GBP"),
   checkoutUrl: httpsUrl,
   description: z.string().max(2000).optional(),
   lineItems: z.array(lineItemSchema).max(50).optional(),

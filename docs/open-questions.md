@@ -57,6 +57,14 @@ Open:
 
 Open: listing questionnaire for a payments-adjacent plugin that never holds funds.
 
+## Region / currency (v0)
+
+v0 currencies are **GBP, EUR, PLN**. The merchant host must still match the UK/EU public-suffix allowlist in `src/region.ts` (already includes `.pl`). That unblocks Allegro (`allegro.pl` + PLN) on the Grokbot widget Approve path without opening arbitrary global FX.
+
+PLN on a clearly non-UK/EU domain (e.g. `.com`) is still rejected. USD / CZK / other currencies stay rejected even on EU suffixes. PLN is allowed on any already-allowlisted UK/EU suffix, not only `.pl`.
+
+Open: whether a later pass should pair currency to suffix (PLN-only-on-`.pl`) instead of allowing PLN on any UK/EU host.
+
 ## Legal posture
 
 Money Bot is software. It does not hold funds and is not an issuer or payment institution.

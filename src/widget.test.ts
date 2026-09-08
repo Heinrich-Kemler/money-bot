@@ -102,6 +102,31 @@ describe("widget payload on PENDING", () => {
     );
   });
 
+  it("Allegro PLN request_spend surfaces PLN on the Grokbot widget", () => {
+    const created = createPendingSpendRequest(
+      {
+        merchantName: "Allegro",
+        merchantUrl: "https://allegro.pl",
+        amount: 49.99,
+        currency: "PLN",
+        checkoutUrl: "https://allegro.pl/checkout",
+      },
+      "user-1",
+    );
+    const result = toRequestSpendResult(created, {
+      approveUrl:
+        "http://localhost:8787/approve?spendRequestId=sr_pln&tenantId=user-1",
+    });
+    assert.equal(result.widget.currency, "PLN");
+    assert.equal(result.widget.merchantDomain, "allegro.pl");
+    assert.equal(result.widget.checkoutUrl, "https://allegro.pl/checkout");
+    const approved = applyDecision(created, "approved", {
+      assertionVerified: true,
+    });
+    assert.equal(approved.status, "APPROVED");
+    assert.equal(approved.currency, "PLN");
+  });
+
   it("get_spend_status helper omits widget once not PENDING", () => {
     const approved = applyDecision(pending(), "approved", {
       assertionVerified: true,
