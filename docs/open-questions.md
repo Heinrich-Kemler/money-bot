@@ -36,7 +36,7 @@ Open: which vault/iframe, if any, before attempting Worker-side PAN.
 
 Chat may only **initiate** Approve. Completion is **phone passkey / PWA**. The **agent must never press Approve**.
 
-**TODO(host-approval-bridge):** signed OOB assertion → `POST /host/spend-decision`. Not an agent-clickable chat Approve.
+**TODO(host-approval-bridge):** **SCAFFOLD / HTTP 501.** Production must POST a signed OOB JWT/HMAC. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. Not an agent-clickable chat Approve. Never accept `decidedBy` alone.
 
 Open:
 

@@ -1,8 +1,6 @@
 import { MoneyBotMCP } from "./mcp.ts";
-import { spendStoreForTenant, SpendStore } from "./store.ts";
-import { SpendError } from "./logic.ts";
-import { redactPaymentSecrets } from "./sanitize.ts";
-import { isDevMode } from "./tools/dev_set_spend_decision.ts";
+import { SpendStore } from "./store.ts";
+import { AGENT_MCP_TOOLS, OOB_ASSERTION_CONTRACT } from "./types.ts";
 
 export { MoneyBotMCP, SpendStore };
 
@@ -10,56 +8,29 @@ const mcpHandler = MoneyBotMCP.serve("/mcp", { binding: "MCP_OBJECT" });
 const sseHandler = MoneyBotMCP.serveSSE("/sse", { binding: "MCP_OBJECT" });
 
 function json(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(redactPaymentSecrets(data), null, 2), {
+  return new Response(JSON.stringify(data, null, 2), {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
 }
 
-async function readJson(request: Request): Promise<Record<string, unknown>> {
-  try {
-    return (await request.json()) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-async function applyHostDecision(
-  env: Env,
-  body: Record<string, unknown>,
-): Promise<Response> {
-  const spendRequestId = String(body.spendRequestId ?? "");
-  const decision = body.decision;
-  const tenantId = String(body.tenantId ?? "anonymous");
-  if (!spendRequestId || (decision !== "approved" && decision !== "denied")) {
-    return json(
-      { error: "spendRequestId and decision (approved|denied) are required." },
-      400,
-    );
-  }
-  try {
-    const store = spendStoreForTenant(env, tenantId);
-    const updated = await store.decide(spendRequestId, tenantId, decision, {
-      decidedBy: typeof body.decidedBy === "string" ? body.decidedBy : "human",
-      denyReason:
-        typeof body.denyReason === "string" ? body.denyReason : undefined,
-      orderId: typeof body.orderId === "string" ? body.orderId : undefined,
-    });
-    if (!updated.ok) {
-      return json({ error: updated.error }, 400);
-    }
-    return json({
-      spendRequestId: updated.value.spendRequestId,
-      status: updated.value.status,
-      decidedAt: updated.value.decidedAt,
-      decidedBy: updated.value.decidedBy,
-      denyReason: updated.value.denyReason,
-    });
-  } catch (error) {
-    const message =
-      error instanceof SpendError ? error.message : "Decision failed.";
-    return json({ error: message }, 400);
-  }
+function scaffoldNotImplemented(kind: "approve" | "outcome"): Response {
+  return json(
+    {
+      error:
+        kind === "approve"
+          ? "host_approval_bridge_not_connected"
+          : "host_outcome_bridge_not_connected",
+      scaffoldOnly: true,
+      message:
+        "SCAFFOLD ONLY — not production. This endpoint does not apply decisions. " +
+        "It never trusts a raw decidedBy string. A future host must present a signed " +
+        "out-of-band assertion (phone passkey/PWA). The shopping agent cannot Approve " +
+        "or mark PAID.",
+      contract: OOB_ASSERTION_CONTRACT,
+    },
+    501,
+  );
 }
 
 export default {
@@ -79,31 +50,26 @@ export default {
     }
 
     if (url.pathname === "/host/spend-decision" && request.method === "POST") {
-      // TODO(host-approval-bridge): Chat button only *initiates* approval.
-      // Production Approve MUST be out-of-band (phone passkey / PWA).
-      // The agent must never be able to press Approve (Ramp-style SoD).
-      // Authenticate the human device, map Cursor user → tenantId,
-      // and never accept agent-originated decisions.
-      if (!isDevMode(env)) {
-        return json(
-          {
-            error: "host_approval_bridge_not_connected",
-            message:
-              "TODO: Wire an out-of-band Approve (phone passkey/PWA) to this endpoint. " +
-              "A chat button may only start that flow — not complete it. " +
-              "The agent cannot Approve. autoApproveMax is 0.",
-          },
-          501,
-        );
-      }
-      return applyHostDecision(env, await readJson(request));
+      // C2/C4: never apply a decision from spoofable JSON. Contract only.
+      return scaffoldNotImplemented("approve");
     }
 
-    if (url.pathname === "/dev/spend-decision" && request.method === "POST") {
-      if (!isDevMode(env)) {
-        return json({ error: "DEV_MODE is not enabled." }, 404);
-      }
-      return applyHostDecision(env, await readJson(request));
+    if (url.pathname === "/host/checkout-outcome" && request.method === "POST") {
+      // C1: payment outcome is host/OOB only — not implemented in v0.
+      return scaffoldNotImplemented("outcome");
+    }
+
+    if (url.pathname === "/dev/spend-decision") {
+      return json(
+        {
+          error: "removed",
+          message:
+            "HTTP decide endpoints do not apply spend decisions. " +
+            "SCAFFOLD ONLY. Production needs a signed OOB assertion.",
+          contract: OOB_ASSERTION_CONTRACT,
+        },
+        410,
+      );
     }
 
     if (url.pathname === "/" && request.method === "GET") {
@@ -111,18 +77,17 @@ export default {
         name: "Money Bot",
         id: "money-bot",
         version: "0.1.0",
+        scaffoldOnly: true,
+        notProduction: true,
         mcp: "/mcp",
         stateMachine:
           "IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED (+ DENIED | EXPIRED | REAUTH_REQUIRED)",
-        tools: [
-          "request_spend",
-          "get_spend_status",
-          "prepare_checkout_handoff",
-        ],
-        approval: "out_of_band_only",
+        tools: [...AGENT_MCP_TOOLS],
+        approval: "out_of_band_signed_assertion_required",
         revolut: "optional_in_v0",
         autoApproveMax: 0,
         v1: "not_implemented",
+        oobAssertionContract: OOB_ASSERTION_CONTRACT,
       });
     }
 

@@ -1,7 +1,14 @@
+import { SpendError } from "./errors.ts";
+import {
+  assertCheckoutUrlMatchesLock,
+  assertUkEuMerchant,
+  merchantDomainFromUrl,
+} from "./region.ts";
 import {
   AUTO_APPROVE_MAX,
   CHALLENGE_INSTRUCTIONS,
   CHALLENGE_MINUTES,
+  DENY_AMOUNT_EPSILON,
   DENY_RETRY_WINDOW_MS,
   HANDOFF_INSTRUCTIONS,
   SPEND_TTL_MS,
@@ -20,12 +27,8 @@ import {
 } from "./types.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 
-export class SpendError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SpendError";
-  }
-}
+export { SpendError };
+export { merchantDomainFromUrl };
 
 export function newSpendRequestId(): string {
   return `sr_${crypto.randomUUID()}`;
@@ -37,11 +40,6 @@ export function nowIso(at = new Date()): string {
 
 export function expiresAtFrom(created: Date, ttlMs = SPEND_TTL_MS): string {
   return new Date(created.getTime() + ttlMs).toISOString();
-}
-
-export function merchantDomainFromUrl(url: string): string {
-  const hostname = new URL(url).hostname.toLowerCase();
-  return hostname.startsWith("www.") ? hostname.slice(4) : hostname;
 }
 
 export function shippingKey(shipping?: Shipping): string {
@@ -65,6 +63,28 @@ export function cartFromInput(input: RequestSpendInput): LockedCart {
     merchantDomain: merchantDomainFromUrl(input.merchantUrl),
     shipping: input.shipping,
   };
+}
+
+export function amountToMinorUnits(amount: number): number {
+  return Math.round(amount * 100);
+}
+
+/** Canonical lock binding for OOB tokens (M11). */
+export function lockedCartFingerprint(cart: LockedCart): string {
+  return [
+    cart.merchantDomain,
+    cart.currency,
+    String(amountToMinorUnits(cart.amount)),
+    shippingKey(cart.shipping),
+  ].join("|");
+}
+
+export function denyFingerprint(
+  domain: string,
+  currency: string,
+  amount: number,
+): string {
+  return `${domain}|${currency}|${amountToMinorUnits(amount)}`;
 }
 
 export function cartFromRequest(request: SpendRequest): LockedCart {
@@ -128,13 +148,19 @@ export function createPendingSpendRequest(
   extras: {
     supersededSpendRequestId?: string;
     cartDiff?: CartDiff;
+    lineageSpendRequestIds?: string[];
   } = {},
   at = new Date(),
 ): SpendRequest {
   if (AUTO_APPROVE_MAX !== 0) {
     throw new SpendError("AUTO_APPROVE_MAX must remain 0");
   }
+  assertUkEuMerchant(input.merchantUrl, input.currency);
   const lockedCart = cartFromInput(input);
+  const checkoutUrl = assertCheckoutUrlMatchesLock(
+    input.checkoutUrl,
+    lockedCart.merchantDomain,
+  );
   return {
     spendRequestId: newSpendRequestId(),
     tenantId,
@@ -146,12 +172,14 @@ export function createPendingSpendRequest(
     currency: input.currency,
     shipping: input.shipping,
     lockedCart,
+    lockedCartFingerprint: lockedCartFingerprint(lockedCart),
     spendCap: input.spendCap,
-    checkoutUrl: input.checkoutUrl,
+    checkoutUrl,
     description: input.description,
     lineItems: input.lineItems,
     cartDiff: extras.cartDiff,
     supersededSpendRequestId: extras.supersededSpendRequestId,
+    lineageSpendRequestIds: extras.lineageSpendRequestIds,
     requiresTenantConnection: false,
     createdAt: nowIso(at),
     updatedAt: nowIso(at),
@@ -177,10 +205,30 @@ export function toRequestSpendResult(
 
 export function isRetryOfDenied(
   existing: SpendRequest[],
-  candidate: Pick<SpendRequest, "merchantUrl" | "amount" | "currency">,
+  candidate: {
+    merchantDomain: string;
+    amount: number;
+    currency: string;
+    lockedCart?: LockedCart;
+    supersededSpendRequestId?: string;
+    lineageSpendRequestIds?: string[];
+  },
   at = new Date(),
   windowMs = DENY_RETRY_WINDOW_MS,
 ): SpendRequest | undefined {
+  const candidateFp = denyFingerprint(
+    candidate.merchantDomain,
+    candidate.currency,
+    candidate.amount,
+  );
+  const candidateCartFp = candidate.lockedCart
+    ? lockedCartFingerprint(candidate.lockedCart)
+    : undefined;
+  const lineage = new Set(candidate.lineageSpendRequestIds ?? []);
+  if (candidate.supersededSpendRequestId) {
+    lineage.add(candidate.supersededSpendRequestId);
+  }
+
   return existing.find((request) => {
     if (request.status !== "DENIED") {
       return false;
@@ -191,12 +239,45 @@ export function isRetryOfDenied(
     if (at.getTime() - decided > windowMs) {
       return false;
     }
-    return (
-      request.merchantUrl === candidate.merchantUrl &&
-      request.amount === candidate.amount &&
-      request.currency === candidate.currency
+    if (lineage.has(request.spendRequestId)) {
+      return true;
+    }
+    if (request.currency !== candidate.currency) {
+      return false;
+    }
+    if (request.merchantDomain !== candidate.merchantDomain) {
+      return false;
+    }
+    if (
+      candidateCartFp &&
+      request.lockedCartFingerprint &&
+      candidateCartFp === request.lockedCartFingerprint
+    ) {
+      return true;
+    }
+    const requestFp = denyFingerprint(
+      request.merchantDomain,
+      request.currency,
+      request.amount,
     );
+    if (requestFp === candidateFp) {
+      return true;
+    }
+    return Math.abs(request.amount - candidate.amount) <= DENY_AMOUNT_EPSILON;
   });
+}
+
+export function supersedeLockedRequest(
+  request: SpendRequest,
+  replacementId: string,
+  at = new Date(),
+): SpendRequest {
+  return {
+    ...request,
+    status: "FAILED",
+    supersededBySpendRequestId: replacementId,
+    updatedAt: nowIso(at),
+  };
 }
 
 const LOCKED_STATUSES: SpendStatus[] = [
@@ -307,7 +388,10 @@ export function prepareHandoff(
     );
   }
   if (current.status === "CHALLENGE") {
-    const checkoutUrl = current.checkoutUrl ?? current.merchantUrl;
+    const checkoutUrl = assertCheckoutUrlMatchesLock(
+      current.checkoutUrl,
+      current.merchantDomain,
+    );
     return {
       request: current,
       result: {
@@ -323,7 +407,10 @@ export function prepareHandoff(
       `Checkout handoff requires status APPROVED or WAITING_FOR_YOU (got "${current.status}").`,
     );
   }
-  const checkoutUrl = current.checkoutUrl ?? current.merchantUrl;
+  const checkoutUrl = assertCheckoutUrlMatchesLock(
+    current.checkoutUrl,
+    current.merchantDomain,
+  );
   const next: SpendRequest = {
     ...current,
     status: "WAITING_FOR_YOU",

@@ -26,7 +26,7 @@ export const requestSpendInputSchema = z.object({
   merchantUrl: httpsUrl,
   amount: z.number().positive().finite(),
   currency: z.enum(["GBP", "EUR"]).default("GBP"),
-  checkoutUrl: httpsUrl.optional(),
+  checkoutUrl: httpsUrl,
   description: z.string().max(2000).optional(),
   lineItems: z.array(lineItemSchema).max(50).optional(),
   shipping: shippingSchema.optional(),

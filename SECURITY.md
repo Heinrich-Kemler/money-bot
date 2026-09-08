@@ -1,5 +1,7 @@
 # Money Bot security
 
+> **SCAFFOLD ONLY — not production.** There is **no** working production Approve path. `POST /host/spend-decision` and `POST /host/checkout-outcome` return **501** and document the signed OOB contract. They do **not** trust `decidedBy: "human"`. Do not process live spend until passkey/PWA assertions are implemented.
+
 Primary name: **Money Bot** (`money-bot`).  
 Internal metaphor only: the **Spend Gate** is the state machine below.
 
@@ -23,6 +25,8 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 - Approve **locks the cart**: amount + merchant + domain + shipping.
 - **Approve is out-of-band** (phone passkey / PWA). A chat button may only *initiate* that flow. **The agent must never be able to press Approve** (Ramp-style segregation of duties).
+- The OOB token **must bind `lockedCartFingerprint`** (amount + merchantDomain + currency + shipping). A signed assertion that omits the fingerprint is invalid.
+- **SCAFFOLD:** host decide/outcome endpoints are **501 stubs** (see `OOB_ASSERTION_CONTRACT` in `src/types.ts`). No half-wired “trust the string” Approve.
 - `DENIED` and `EXPIRED` are terminal from `PENDING`.
 - `CHALLENGE` hands SCA/3DS back to the human (UK ~£25, EU ~€30; Amex SafeKey ~4 min; Revolut 3DS ~5 min).
 
@@ -67,8 +71,10 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 **Mitigations**
 
 - `AUTO_APPROVE_MAX = 0`.
-- `decidedBy: "agent"` is rejected.
-- **TODO(host-approval-bridge):** production decision is a **signed out-of-band** passkey/PWA assertion posted to `/host/spend-decision`. Chat only starts that flow. `DEV_MODE` decide hooks are **not** production Approve.
+- `decidedBy: "agent"` is rejected. Raw `decidedBy: "human"` is **not** a valid production signal.
+- Agent MCP tools are only `request_spend`, `get_spend_status`, `prepare_checkout_handoff`. The agent **cannot** call `report_checkout_outcome` or mark `PAID`.
+- Missing `props.userId` **fails closed** (no `"anonymous"` Durable Object).
+- **TODO(host-approval-bridge):** signed OOB JWT/HMAC with `tenantId`, `spendRequestId`, `decision`, `lockedCartFingerprint`. Endpoint is **501** until that exists.
 - Ramp-style **segregation of duties**: requester (agent) ≠ approver (human device).
 
 ### 2. Prompt-injection forced spend
@@ -97,7 +103,7 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 **Mitigations**
 
-- `DENIED` / `EXPIRED` are terminal; same merchant+amount+currency blocked for 24h.
+- `DENIED` / `EXPIRED` are terminal. Retry window (24h) matches **merchantDomain + currency + amount within £/€0.50**, plus locked-cart fingerprint and spend-request **lineage** (blocks ±£0.01 and cart-hash retries).
 
 ### 5. Cross-tenant / pooled funds
 
@@ -122,7 +128,7 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 **Mitigations**
 
-- Locked cart at `APPROVED`; mismatch → new `PENDING` with `cartDiff`. Agent cannot approve the replacement.
+- Locked cart at `APPROVED`; mismatch → new `PENDING` with `cartDiff` and the previous lock is **cancelled** (`FAILED` + `supersededBySpendRequestId`). Agent cannot approve the replacement.
 
 ### 8. Log / transcript leakage
 
@@ -148,5 +154,6 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 - No Revolut Business connect, Cards API, virtual PAN, freeze/thaw, or `TransactionCreated` consumer.
 - No Revolut Merchant API. No card-issuing-as-a-service.
-- No in-chat / agent-clickable Approve — **TODO(host-approval-bridge) is OOB**, not a chat Approve button that the model can press.
+- No in-chat / agent-clickable Approve — **TODO(host-approval-bridge) is a 501 signed-OOB contract**, not a chat Approve button and not a `decidedBy` string.
+- No agent-callable payment outcome. PAN sanitizer skips `orderId` (Luhn-only redaction for digit runs).
 - No production per-user public OAuth (it does not exist for Revolut Business).

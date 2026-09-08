@@ -12,8 +12,9 @@ export function isDevMode(env: Env): boolean {
 export function registerDevSetSpendDecision(
   server: McpServer,
   getCtx: () => ToolContext,
+  devMode: boolean,
 ): void {
-  if (!isDevMode(getCtx().env)) {
+  if (!devMode) {
     return;
   }
 

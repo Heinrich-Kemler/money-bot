@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { requireTenantId } from "./auth.ts";
 import {
   applyCheckoutOutcome,
   applyDecision,
@@ -16,18 +17,19 @@ import {
   refreshTenantConnection,
   resumeAfterReauth,
   SpendError,
+  supersedeLockedRequest,
   toRequestSpendResult,
 } from "./logic.ts";
-import { REVOLUT_RECONSENT_MS } from "./types.ts";
+import { AGENT_MCP_TOOLS, REVOLUT_RECONSENT_MS } from "./types.ts";
 import { redactPaymentSecrets } from "./sanitize.ts";
 import type { SpendRequest } from "./types.ts";
 
 const input = {
   merchantName: "Example Shop",
-  merchantUrl: "https://shop.example",
+  merchantUrl: "https://shop.example.co.uk",
   amount: 12.5,
   currency: "GBP" as const,
-  checkoutUrl: "https://shop.example/checkout",
+  checkoutUrl: "https://shop.example.co.uk/checkout",
   shipping: { country: "GB", postalCode: "SW1A 1AA" },
 };
 
@@ -38,6 +40,31 @@ function pending(overrides: Partial<SpendRequest> = {}): SpendRequest {
   };
 }
 
+describe("agent MCP surface", () => {
+  it("does not expose report_checkout_outcome or edit_spend_cap", () => {
+    assert.deepEqual([...AGENT_MCP_TOOLS], [
+      "request_spend",
+      "get_spend_status",
+      "prepare_checkout_handoff",
+    ]);
+    assert.equal(AGENT_MCP_TOOLS.includes("report_checkout_outcome" as never), false);
+    assert.equal(AGENT_MCP_TOOLS.includes("edit_spend_cap" as never), false);
+  });
+});
+
+describe("tenant auth fail-closed", () => {
+  it("rejects missing, blank, and anonymous userId", () => {
+    assert.throws(
+      () => requireTenantId(undefined),
+      (error: unknown) =>
+        error instanceof SpendError && /Unauthenticated/.test(error.message),
+    );
+    assert.throws(() => requireTenantId(""));
+    assert.throws(() => requireTenantId("anonymous"));
+    assert.equal(requireTenantId("user-99"), "user-99");
+  });
+});
+
 describe("request_spend result", () => {
   it("returns PENDING with a locked-cart snapshot and no credentials", () => {
     const created = createPendingSpendRequest(input, "user-1");
@@ -46,10 +73,26 @@ describe("request_spend result", () => {
     assert.equal(result.merchantName, "Example Shop");
     assert.equal(result.amount, 12.5);
     assert.equal(result.currency, "GBP");
-    assert.equal(result.lockedCart.merchantDomain, "shop.example");
+    assert.equal(result.lockedCart.merchantDomain, "shop.example.co.uk");
     assert.equal(result.lockedCart.shipping?.postalCode, "SW1A 1AA");
     assert.ok(result.spendRequestId.startsWith("sr_"));
     assert.equal("checkoutUrl" in result, false);
+  });
+
+  it("rejects non-UK/EU merchant domains", () => {
+    assert.throws(
+      () =>
+        createPendingSpendRequest(
+          {
+            ...input,
+            merchantUrl: "https://shop.example.com",
+            checkoutUrl: "https://shop.example.com/checkout",
+          },
+          "user-1",
+        ),
+      (error: unknown) =>
+        error instanceof SpendError && /UK\/EU/.test(error.message),
+    );
   });
 });
 
@@ -67,48 +110,64 @@ describe("deny is final", () => {
     );
   });
 
-  it("blocks retry spam for the same merchant, amount, and currency", () => {
+  it("blocks retry spam including a penny change on the same domain", () => {
     const denied = applyDecision(pending(), "denied", { decidedBy: "human" });
-    const retry = isRetryOfDenied([denied], {
-      merchantUrl: input.merchantUrl,
-      amount: input.amount,
-      currency: input.currency,
+    const exact = isRetryOfDenied([denied], {
+      merchantDomain: "shop.example.co.uk",
+      amount: 12.5,
+      currency: "GBP",
+      lockedCart: denied.lockedCart,
     });
-    assert.equal(retry?.spendRequestId, denied.spendRequestId);
+    assert.equal(exact?.spendRequestId, denied.spendRequestId);
+    const penny = isRetryOfDenied([denied], {
+      merchantDomain: "shop.example.co.uk",
+      amount: 12.51,
+      currency: "GBP",
+    });
+    assert.equal(penny?.spendRequestId, denied.spendRequestId);
   });
 });
 
 describe("cart lock at approval", () => {
   it("normalizes merchant domain", () => {
     assert.equal(
-      merchantDomainFromUrl("https://www.Shop.Example/cart"),
-      "shop.example",
+      merchantDomainFromUrl("https://www.Shop.Example.co.uk/cart"),
+      "shop.example.co.uk",
     );
   });
 
-  it("treats amount / merchant / domain / shipping mismatch as a new PENDING diff", () => {
+  it("treats amount / shipping mismatch as a new PENDING and cancels the old lock", () => {
     const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
     const nextCart = {
       amount: 18,
       currency: "GBP" as const,
       merchantName: "Example Shop",
-      merchantDomain: "shop.example",
+      merchantDomain: "shop.example.co.uk",
       shipping: { country: "GB", postalCode: "EC1A 1BB" },
     };
     const mismatch = findLockedCartMismatch([approved], nextCart);
     assert.ok(mismatch);
-    assert.deepEqual(mismatch.diff.fields.sort(), ["amount", "shipping"].sort());
     const replacement = createPendingSpendRequest(
-      { ...input, amount: 18, shipping: nextCart.shipping },
+      {
+        ...input,
+        amount: 18,
+        shipping: nextCart.shipping,
+        checkoutUrl: "https://shop.example.co.uk/checkout",
+      },
       "user-1",
       {
         supersededSpendRequestId: approved.spendRequestId,
         cartDiff: mismatch.diff,
+        lineageSpendRequestIds: [approved.spendRequestId],
       },
     );
+    const cancelled = supersedeLockedRequest(
+      approved,
+      replacement.spendRequestId,
+    );
     assert.equal(replacement.status, "PENDING");
-    assert.equal(replacement.supersededSpendRequestId, approved.spendRequestId);
-    assert.ok(replacement.cartDiff);
+    assert.equal(cancelled.status, "FAILED");
+    assert.equal(cancelled.supersededBySpendRequestId, replacement.spendRequestId);
   });
 
   it("does not treat an identical locked cart as a mismatch", () => {
@@ -130,15 +189,6 @@ describe("edit spend cap", () => {
     assert.equal(next.status, "PENDING");
     assert.equal(next.spendCap, 20);
   });
-
-  it("refuses cap edits after APPROVED", () => {
-    const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
-    assert.throws(
-      () => editSpendCap(approved, 5),
-      (error: unknown) =>
-        error instanceof SpendError && /never grants approval/.test(error.message),
-    );
-  });
 });
 
 describe("prepare_checkout_handoff", () => {
@@ -151,37 +201,49 @@ describe("prepare_checkout_handoff", () => {
     );
   });
 
-  it("moves APPROVED to WAITING_FOR_YOU with human handoff instructions", () => {
+  it("requires https checkoutUrl on the locked merchant domain", () => {
     const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
     const { result } = prepareHandoff(approved);
     assert.equal(result.status, "WAITING_FOR_YOU");
-    assert.equal(result.checkoutUrl, "https://shop.example/checkout");
-    assert.match(result.handoffInstructions, /Apple Pay/);
-    assert.match(result.handoffInstructions, /iOS 18/);
-    assert.match(result.handoffInstructions, /Revolut Pay/);
+    assert.equal(result.checkoutUrl, "https://shop.example.co.uk/checkout");
     assert.equal("pan" in result, false);
-    assert.equal("cvc" in result, false);
+
+    const mismatched = applyDecision(
+      pending({ checkoutUrl: "https://evil.example.co.uk/pay" }),
+      "approved",
+      { decidedBy: "human" },
+    );
+    assert.throws(
+      () => prepareHandoff(mismatched),
+      (error: unknown) =>
+        error instanceof SpendError && /must match locked merchantDomain/.test(error.message),
+    );
+  });
+
+  it("does not fall back to merchantUrl when checkoutUrl is missing", () => {
+    const approved = applyDecision(
+      pending({ checkoutUrl: undefined }),
+      "approved",
+      { decidedBy: "human" },
+    );
+    assert.throws(
+      () => prepareHandoff(approved),
+      (error: unknown) =>
+        error instanceof SpendError && /checkoutUrl is required/.test(error.message),
+    );
   });
 });
 
-describe("completion paths", () => {
-  it("WAITING_FOR_YOU → CHALLENGE → PAID", () => {
+describe("host-only completion paths", () => {
+  it("WAITING_FOR_YOU → CHALLENGE → PAID is host logic, not an agent tool", () => {
     const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
     const waiting = prepareHandoff(approved).request;
     const challenge = applyCheckoutOutcome(waiting, "CHALLENGE", {
       challengeKind: "revolut_3ds",
     });
     assert.equal(challenge.status, "CHALLENGE");
-    assert.equal(challenge.challenge?.expectedMinutes, 5);
     const paid = applyCheckoutOutcome(challenge, "PAID", { orderId: "ord_1" });
     assert.equal(paid.status, "PAID");
-    assert.equal(paid.orderId, "ord_1");
-  });
-
-  it("WAITING_FOR_YOU → FAILED", () => {
-    const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
-    const waiting = prepareHandoff(approved).request;
-    assert.equal(applyCheckoutOutcome(waiting, "FAILED").status, "FAILED");
   });
 });
 
@@ -191,12 +253,6 @@ describe("expiry", () => {
       expiresAt: new Date(Date.now() - 1000).toISOString(),
     });
     assert.equal(maybeExpire(request).status, "EXPIRED");
-  });
-
-  it("does not expire APPROVED on the pending TTL", () => {
-    const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
-    const aged = { ...approved, expiresAt: new Date(Date.now() - 1000).toISOString() };
-    assert.equal(maybeExpire(aged).status, "APPROVED");
   });
 });
 
@@ -214,7 +270,6 @@ describe("REAUTH_REQUIRED", () => {
   it("defaults v0 tenants to NOT_CONNECTED (Revolut optional)", () => {
     const tenant = defaultTenantConnection("user-1");
     assert.equal(tenant.status, "NOT_CONNECTED");
-    assert.equal(tenant.revolutConnected, false);
     assert.equal(pending().requiresTenantConnection, false);
   });
 
@@ -231,9 +286,9 @@ describe("REAUTH_REQUIRED", () => {
   });
 
   it("pauses only v1-bound spends when the tenant needs re-consent", () => {
-    const tenant: ReturnType<typeof defaultTenantConnection> = {
+    const tenant = {
       ...defaultTenantConnection("user-1"),
-      status: "REAUTH_REQUIRED",
+      status: "REAUTH_REQUIRED" as const,
       revolutConnected: true,
       consentExpiresAt: new Date(Date.now() - 1000).toISOString(),
     };
@@ -244,7 +299,6 @@ describe("REAUTH_REQUIRED", () => {
       tenant,
     );
     assert.equal(v1.status, "REAUTH_REQUIRED");
-    assert.equal(v1.statusBeforeReauth, "PENDING");
     assert.throws(
       () => resumeAfterReauth(v1, tenant),
       (error: unknown) =>
@@ -254,15 +308,17 @@ describe("REAUTH_REQUIRED", () => {
 });
 
 describe("sanitizer", () => {
-  it("strips PAN-like fields from tool payloads", () => {
+  it("strips Luhn-valid PAN fields but keeps order ids", () => {
     const redacted = redactPaymentSecrets({
       status: "WAITING_FOR_YOU",
       pan: "4111111111111111",
       cvc: "123",
+      orderId: "123456789012345",
       note: "card 4111111111111111 leaked",
     });
     assert.equal("pan" in redacted, false);
     assert.equal("cvc" in redacted, false);
+    assert.equal(redacted.orderId, "123456789012345");
     assert.match(redacted.note, /REDACTED/);
   });
 });

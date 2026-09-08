@@ -137,6 +137,9 @@ export type SpendRequest = {
   lineItems?: LineItem[];
   cartDiff?: CartDiff;
   supersededSpendRequestId?: string;
+  supersededBySpendRequestId?: string;
+  lineageSpendRequestIds?: string[];
+  lockedCartFingerprint?: string;
   challenge?: ChallengeInfo;
   /**
    * v1 only: spend is bound to this tenant's Revolut Business.
@@ -187,6 +190,44 @@ export const SPEND_TTL_MS = 30 * 60 * 1000;
 
 export const DENY_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/** Same-domain deny matches if |Δamount| is within this (blocks ±£0.01 retries). */
+export const DENY_AMOUNT_EPSILON = 0.5;
+
+/** Agent-visible MCP tools. Outcome and cap tools are host/OOB only. */
+export const AGENT_MCP_TOOLS = [
+  "request_spend",
+  "get_spend_status",
+  "prepare_checkout_handoff",
+] as const;
+
+/**
+ * SCAFFOLD ONLY — production Approve is not implemented (HTTP 501).
+ * A future host must POST a signed OOB assertion. Raw `decidedBy` is never enough.
+ */
+export const OOB_ASSERTION_CONTRACT = {
+  scaffoldOnly: true,
+  transport: "POST /host/spend-decision with Authorization: Bearer <jwt-or-hmac>",
+  type: "JWT or HMAC over a WebAuthn/passkey-bound OOB session — never a chat click",
+  requiredClaims: {
+    iss: "money-bot-oob",
+    aud: "money-bot",
+    exp: "unix seconds, short-lived (minutes)",
+    iat: "unix seconds",
+    jti: "unique assertion id (replay protection)",
+    spendRequestId: "sr_…",
+    tenantId: "authenticated Cursor user id — never anonymous, never omitted",
+    decision: "approved | denied",
+    lockedCartFingerprint:
+      "MUST equal the stored locked-cart fingerprint (binds token to amount+merchantDomain+currency+shipping)",
+  },
+  rejected: [
+    "raw decidedBy string",
+    'decidedBy: "human"',
+    "agent tools/call",
+    "unsigned JSON body",
+  ],
+} as const;
+
 /** SCA still applies in the UK (~£25) and EU (~€30). */
 export const SCA_THRESHOLD_GBP = 25;
 export const SCA_THRESHOLD_EUR = 30;
@@ -204,11 +245,12 @@ export const HANDOFF_INSTRUCTIONS =
   "Apple Pay on desktop Safari uses the payment sheet. " +
   "Apple Pay on desktop non-Safari: the human scans a QR with iPhone (iOS 18+), about 30 seconds. " +
   "Revolut Pay: if the merchant supports it, the human scans a QR and approves in the Revolut app; otherwise fall back to Apple Pay. " +
-  "If a 3-D Secure / SCA challenge appears (UK ~£25, EU ~€30), report CHALLENGE and wait — " +
-  "Amex SafeKey about 4 minutes, Revolut 3DS about 5 minutes. Do not complete the challenge as the agent.";
+  "If a 3-D Secure / SCA challenge appears (UK ~£25, EU ~€30), hand the screen to the human and wait — " +
+  "Amex SafeKey about 4 minutes, Revolut 3DS about 5 minutes. " +
+  "Do not mark PAID yourself; only the human/host records payment outcome.";
 
 export const CHALLENGE_INSTRUCTIONS =
   "A strong-customer-authentication challenge is in progress. " +
   "Hand the screen back to the human and wait. " +
   "Amex SafeKey typically takes about 4 minutes; Revolut 3DS about 5 minutes. " +
-  "Do not enter card numbers. After the human finishes, report PAID or FAILED.";
+  "Do not enter card numbers. Only the human/host records PAID or FAILED.";

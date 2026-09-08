@@ -1,25 +1,22 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  applyCheckoutOutcome,
   applyDecision,
   applyTenantReauth,
   assertSameTenant,
   cartFromInput,
   createPendingSpendRequest,
   defaultTenantConnection,
-  editSpendCap,
   findLockedCartMismatch,
   isRetryOfDenied,
   maybeExpire,
   prepareHandoff,
   refreshTenantConnection,
   SpendError,
+  supersedeLockedRequest,
 } from "./logic.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 import type {
-  ChallengeInfo,
   CheckoutHandoffResult,
-  CheckoutOutcome,
   SpendDecision,
   SpendRequest,
   TenantConnection,
@@ -62,18 +59,19 @@ export class SpendStore extends DurableObject<Env> {
   ): Promise<StoreResult<SpendRequest>> {
     try {
       const existing = await this.listAll();
+      const nextCart = cartFromInput(input);
       const retry = isRetryOfDenied(existing, {
-        merchantUrl: input.merchantUrl,
+        merchantDomain: nextCart.merchantDomain,
         amount: input.amount,
         currency: input.currency,
+        lockedCart: nextCart,
       });
       if (retry) {
         throw new SpendError(
-          `Deny is final for ${retry.spendRequestId}. Do not retry the same merchant, amount, and currency.`,
+          `Deny is final for ${retry.spendRequestId}. Do not retry the same merchant domain, currency, or nearby amount.`,
         );
       }
 
-      const nextCart = cartFromInput(input);
       const sameLock = existing.find(
         (record) =>
           (record.status === "APPROVED" ||
@@ -88,10 +86,24 @@ export class SpendStore extends DurableObject<Env> {
         );
       }
       const mismatch = findLockedCartMismatch(existing, nextCart);
+      const lineage = mismatch
+        ? [
+            ...(mismatch.request.lineageSpendRequestIds ?? []),
+            mismatch.request.spendRequestId,
+          ]
+        : undefined;
       const request = createPendingSpendRequest(input, tenantId, {
         supersededSpendRequestId: mismatch?.request.spendRequestId,
         cartDiff: mismatch?.diff,
+        lineageSpendRequestIds: lineage,
       });
+      if (mismatch) {
+        const cancelled = supersedeLockedRequest(
+          mismatch.request,
+          request.spendRequestId,
+        );
+        await this.ctx.storage.put(cancelled.spendRequestId, cancelled);
+      }
       await this.ctx.storage.put(request.spendRequestId, request);
       const ids = await this.readIndex();
       ids.push(request.spendRequestId);
@@ -165,41 +177,6 @@ export class SpendStore extends DurableObject<Env> {
     }
   }
 
-  async editCap(
-    spendRequestId: string,
-    tenantId: string,
-    spendCap: number,
-  ): Promise<StoreResult<SpendRequest>> {
-    try {
-      const current = unwrapStore(
-        await this.getForTenant(spendRequestId, tenantId),
-      );
-      const next = editSpendCap(current, spendCap);
-      await this.ctx.storage.put(spendRequestId, next);
-      return ok(next);
-    } catch (error) {
-      return fail(error);
-    }
-  }
-
-  async reportOutcome(
-    spendRequestId: string,
-    tenantId: string,
-    outcome: CheckoutOutcome,
-    opts: { challengeKind?: ChallengeInfo["kind"]; orderId?: string } = {},
-  ): Promise<StoreResult<SpendRequest>> {
-    try {
-      const current = unwrapStore(
-        await this.getForTenant(spendRequestId, tenantId),
-      );
-      const next = applyCheckoutOutcome(current, outcome, opts);
-      await this.ctx.storage.put(spendRequestId, next);
-      return ok(next);
-    } catch (error) {
-      return fail(error);
-    }
-  }
-
   private async listAll(): Promise<SpendRequest[]> {
     const ids = await this.readIndex();
     const records: SpendRequest[] = [];
@@ -217,6 +194,11 @@ export function spendStoreForTenant(
   env: Env,
   tenantId: string,
 ): DurableObjectStub<SpendStore> {
+  if (!tenantId || tenantId === "anonymous") {
+    throw new SpendError(
+      "Unauthenticated: tenant userId is required. Refusing a shared anonymous ledger.",
+    );
+  }
   const id = env.SPEND_STORE.idFromName(`tenant:${tenantId}`);
   return env.SPEND_STORE.get(id);
 }

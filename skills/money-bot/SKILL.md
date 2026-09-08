@@ -36,7 +36,8 @@ IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
 - Human Approve is **out-of-band**. Chat can only *start* that flow. Cart locks at Approve.
 - `prepare_checkout_handoff` → `WAITING_FOR_YOU`.
 - `get_spend_status` also returns `tenantConnection`. `REAUTH_REQUIRED` means the tenant’s ~90-day Revolut re-consent wizard is due (v1). v0 handoff does not need Revolut.
-- Deny / expire are terminal.
+- Payment outcome (`PAID` / `FAILED`) is **host/human only**. You have no `report_checkout_outcome` tool. Do not claim PAID.
+- Deny / expire are terminal. This repo is a **scaffold**; production Approve is not wired.
 
 ## v0 flow
 
@@ -48,8 +49,8 @@ IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
    - `DENIED` / `EXPIRED` — stop.
    - `REAUTH_REQUIRED` — tell the human to finish the Revolut connect **wizard** (not OAuth). Do not invent a token.
    - `APPROVED` — `prepare_checkout_handoff`.
-   - `CHALLENGE` — hand 3DS back to the human (Amex ~4 min, Revolut 3DS ~5 min).
-5. Handoff: never a raw PAN.
+   - `CHALLENGE` / `WAITING_FOR_YOU` — hand the screen to the human. Do not mark PAID.
+5. Handoff: never a raw PAN. `checkoutUrl` must be https on the locked merchant domain (UK/EU only).
    - Apple Pay desktop non-Safari: iPhone QR, iOS 18+, ~30s.
    - Revolut Pay: QR + in-app approve if offered; else Apple Pay.
 

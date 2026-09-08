@@ -1,12 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
+import { requireTenantId } from "./auth.ts";
+import { SpendError } from "./errors.ts";
 import { registerDevSetSpendDecision } from "./tools/dev_set_spend_decision.ts";
-import { registerEditSpendCap } from "./tools/edit_spend_cap.ts";
 import { registerGetSpendStatus } from "./tools/get_spend_status.ts";
 import { registerPrepareCheckoutHandoff } from "./tools/prepare_checkout_handoff.ts";
-import { registerReportCheckoutOutcome } from "./tools/report_checkout_outcome.ts";
 import { registerRequestSpend } from "./tools/request_spend.ts";
-import type { ToolContext } from "./types.ts";
+import { AGENT_MCP_TOOLS, type ToolContext } from "./types.ts";
 
 export type MoneyBotProps = {
   userId?: string;
@@ -27,11 +27,11 @@ export class MoneyBotMCP extends McpAgent<
   private toolContext(): ToolContext {
     const env = this.env;
     if (!env) {
-      throw new Error("Worker env is not available.");
+      throw new SpendError("Worker env is not available.");
     }
     return {
       env,
-      tenantId: this.props?.userId ?? "anonymous",
+      tenantId: requireTenantId(this.props?.userId),
     };
   }
 
@@ -41,8 +41,12 @@ export class MoneyBotMCP extends McpAgent<
     registerRequestSpend(this.server, ctx);
     registerGetSpendStatus(this.server, ctx);
     registerPrepareCheckoutHandoff(this.server, ctx);
-    registerReportCheckoutOutcome(this.server, ctx);
-    registerEditSpendCap(this.server, ctx);
-    registerDevSetSpendDecision(this.server, ctx);
+    // C1/H8: report_checkout_outcome and edit_spend_cap are NOT agent tools.
+    registerDevSetSpendDecision(
+      this.server,
+      ctx,
+      this.env?.DEV_MODE === "true",
+    );
+    void AGENT_MCP_TOOLS;
   }
 }

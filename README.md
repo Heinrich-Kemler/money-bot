@@ -1,5 +1,7 @@
 # Money Bot
 
+> **SCAFFOLD ONLY — not production.** Out-of-band Approve is **not implemented** (`POST /host/spend-decision` returns **501**). Do not use this Worker to move real money until a signed OOB assertion (passkey/PWA) is wired. The shopping agent cannot Approve or mark `PAID`.
+
 Public Cursor marketplace plugin so any user’s agent can pay for **UK/EU** online checkouts without putting card numbers in the model.
 
 **Package / id:** `money-bot`  
@@ -32,16 +34,19 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 | --- | --- |
 | (no request) | `IDLE` |
 | `request_spend` | `IDLE` → `PENDING` |
-| **Out-of-band** human Approve (phone passkey/PWA) | `PENDING` → `APPROVED` — locks amount + merchant + domain + shipping |
-| Human Deny | `PENDING` → `DENIED` (terminal) |
+| **Signed OOB** Approve (passkey/PWA) — **not implemented, HTTP 501** | `PENDING` → `APPROVED` — locks amount + merchant + domain + shipping. Token **must bind `lockedCartFingerprint`**. Raw `decidedBy` is rejected. |
+| Human Deny (same signed assertion) | `PENDING` → `DENIED` (terminal) |
 | Pending TTL | `PENDING` → `EXPIRED` (terminal) |
-| `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU` |
+| `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU` — requires https `checkoutUrl` on the locked merchant domain |
 | `get_spend_status` | Full status + `tenantConnection` |
+| Host/OOB checkout outcome — **not an agent tool** | `WAITING_FOR_YOU` → `PAID` / `CHALLENGE` / `FAILED` |
 | 90-day Revolut re-consent (v1-bound only) | → `REAUTH_REQUIRED` until the connect **wizard** completes |
 
-A chat control may only **initiate** Approve. The **agent must never press Approve** (Ramp-style segregation of duties). `DEV_MODE` helpers are local test hooks, not production Approve.
+A chat control may only **initiate** Approve. The **agent must never press Approve** (Ramp-style segregation of duties). `report_checkout_outcome` and `edit_spend_cap` are **not** on the agent MCP surface.
 
-Deny and expire are terminal. After Approve, a cart mismatch opens a **new PENDING** with a diff.
+Deny and expire are terminal. A cart mismatch opens a **new PENDING** and **cancels** the previous `APPROVED` lock (`FAILED` + `supersededBySpendRequestId`). Deny retries match merchant domain + currency + amount within £/€0.50 (blocks ±£0.01).
+
+v0 merchants must be **UK/EU domains** and **GBP/EUR**. Other regions return a clear error.
 
 ## Product
 
@@ -74,9 +79,9 @@ Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must
 1. Fill the merchant cart (amount, merchant URL/domain, shipping).
 2. `request_spend` → `{ status: "PENDING", spendRequestId, lockedCart, … }`.
 3. Tell the human to Approve **out-of-band** (phone passkey/PWA). A chat button only starts that flow. **Do not click Approve yourself.**  
-   **TODO(host-approval-bridge):** signed OOB decision → `POST /host/spend-decision` (501 until wired).
+   **TODO(host-approval-bridge):** signed OOB JWT/HMAC → `POST /host/spend-decision` (**501**, contract on `/`). Claims must include `tenantId`, `spendRequestId`, `decision`, and **`lockedCartFingerprint`**. Never `decidedBy: "human"` alone.
 4. `get_spend_status` until `APPROVED`, `DENIED`, `EXPIRED`, or `REAUTH_REQUIRED`.
-5. `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Hand the screen to the human. Never show a raw PAN.
+5. `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Hand the screen to the human. Never show a raw PAN. Do **not** mark `PAID`.
 
 ## Security summary
 
@@ -110,15 +115,15 @@ npm test
 npm start                        # wrangler dev — MCP at http://localhost:8787/mcp
 ```
 
-### MCP tools (v0)
+### MCP tools (v0 agent surface)
 
 | Tool | Role |
 | --- | --- |
-| `request_spend` | `IDLE` → `PENDING` |
+| `request_spend` | `IDLE` → `PENDING` (UK/EU + https checkout URL on the same domain) |
 | `get_spend_status` | Machine status + locked cart + `tenantConnection` |
 | `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU`; no credentials |
 
-`dev_set_spend_decision` exists only when `DEV_MODE=true` and is **not** production Approve.
+`dev_set_spend_decision` exists only when `DEV_MODE=true` (local scaffold hook). Production Approve is **501** until a signed OOB assertion exists.
 
 ## Disclaimer
 

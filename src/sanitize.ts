@@ -22,22 +22,71 @@ const BLOCKED_KEYS = new Set([
   "fullpan",
 ]);
 
-const PAN_LIKE = /\b(?:\d[ -]*?){13,19}\b/g;
+/** Do not run PAN regex on identifiers (order ids look numeric). */
+const IDENTIFIER_KEYS = new Set([
+  "orderid",
+  "spendrequestid",
+  "tenantid",
+  "jti",
+  "id",
+  "supersededspendrequestid",
+  "supersededbyspendrequestid",
+]);
+
+const DIGIT_RUN = /\b(?:\d[ -]*?){13,19}\b/g;
+
+function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[\s_-]/g, "");
+}
 
 function isBlockedKey(key: string): boolean {
-  return BLOCKED_KEYS.has(key.toLowerCase().replace(/[\s-]/g, ""));
+  return BLOCKED_KEYS.has(normalizeKey(key));
 }
 
-export function redactPaymentSecrets<T>(value: T): T {
-  return redact(value) as T;
+function isIdentifierKey(key: string): boolean {
+  return IDENTIFIER_KEYS.has(normalizeKey(key));
 }
 
-function redact(value: unknown): unknown {
+function luhnValid(digits: string): boolean {
+  let sum = 0;
+  let alternate = false;
+  for (let i = digits.length - 1; i >= 0; i -= 1) {
+    let n = Number(digits[i]);
+    if (Number.isNaN(n)) {
+      return false;
+    }
+    if (alternate) {
+      n *= 2;
+      if (n > 9) {
+        n -= 9;
+      }
+    }
+    sum += n;
+    alternate = !alternate;
+  }
+  return sum % 10 === 0;
+}
+
+function redactPanLike(value: string): string {
+  return value.replace(DIGIT_RUN, (match) => {
+    const digits = match.replace(/\D/g, "");
+    return luhnValid(digits) ? "[REDACTED]" : match;
+  });
+}
+
+export function redactPaymentSecrets<T>(value: T, keyHint = ""): T {
+  return redact(value, keyHint) as T;
+}
+
+function redact(value: unknown, keyHint: string): unknown {
   if (typeof value === "string") {
-    return value.replace(PAN_LIKE, "[REDACTED]");
+    if (isIdentifierKey(keyHint)) {
+      return value;
+    }
+    return redactPanLike(value);
   }
   if (Array.isArray(value)) {
-    return value.map(redact);
+    return value.map((item) => redact(item, keyHint));
   }
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
@@ -45,7 +94,7 @@ function redact(value: unknown): unknown {
       if (isBlockedKey(key)) {
         continue;
       }
-      out[key] = redact(nested);
+      out[key] = redact(nested, key);
     }
     return out;
   }
@@ -70,7 +119,7 @@ export function errorToolResult(message: string): {
   isError: true;
 } {
   return {
-    content: [{ type: "text", text: redactPaymentSecrets(message) }],
+    content: [{ type: "text", text: String(message) }],
     isError: true,
   };
 }
