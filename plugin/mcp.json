@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "money-bot": {
+      "url": "${MONEY_BOT_MCP_URL}"
+    }
+  }
+}

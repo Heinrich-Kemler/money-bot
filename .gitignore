@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Wrangler
+.dev.vars
+.wrangler/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs & coverage
+logs
+*.log
+coverage
+*.lcov
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode-test
+
+# Pack
+*.tgz

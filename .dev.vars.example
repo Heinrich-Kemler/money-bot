@@ -1,0 +1,9 @@
+# Copy to `.dev.vars` for local wrangler (never commit `.dev.vars`).
+# No production secrets belong in the repo.
+# There is no DEV_MODE Approve switch. Host decide stays HTTP 501.
+
+AUTO_APPROVE_MAX=0
+
+# v1 (not implemented): per-tenant Revolut Business wizard credentials live in a vault.
+# REVOLUT_CLIENT_ID=
+# REVOLUT_CLIENT_SECRET=
