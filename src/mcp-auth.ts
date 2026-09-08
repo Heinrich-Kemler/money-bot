@@ -26,9 +26,8 @@ function jsonAuthError(status: number, error: string, message: string): Response
 }
 
 /**
- * N-3 / N-4: resolve identity before McpAgent.serve.
- * Unauthenticated initialize / tools/list / tools/call must not allocate
- * MoneyBotMCP session DOs or tenant SpendStore DOs.
+ * Identity before McpAgent.serve. N-4 is P2: this is the minimal gate so
+ * unauth initialize / tools/list do not allocate MCP or tenant DOs.
  */
 export function authorizeMcpSession(
   request: Request,

@@ -180,7 +180,7 @@ describe("N-3 ALLOW_TEST_AUTH production lockout", () => {
   });
 });
 
-describe("N-4 unauthenticated MCP does not allocate tenant DOs", () => {
+describe("N-4 (P2) unauthenticated MCP does not allocate tenant DOs", () => {
   it("initialize / tools/list without auth is 401 and does not touch tenant storage", () => {
     let allocated = false;
     const env = {

@@ -3,7 +3,20 @@
 Status: **design note only**. This document does **not** implement the widget, passkey/WebAuthn, or a Life Admin integration.
 
 Date: 2026-09-08  
-Related: Fable second audit N-1 (bearer `approveUrl`), this PR’s N-2–N-5 code fixes.
+Related: Fable second audit N-1 (bearer `approveUrl`); Life Admin re-audit priority below.
+
+## Life Admin re-audit priority
+
+| ID | Priority | This PR |
+| --- | --- | --- |
+| N-1 | Block before Grokbot/public ship (design) | Design note only: **human widget** on Grokbot; `approveUrl` = local smoke; passkey = public Cursor later. **No passkey impl.** |
+| N-2 | Must-fix | Same-`merchantDomain` (or explicit `supersedes`) only. |
+| N-3 | Must-fix | `ALLOW_TEST_AUTH` impossible/inert on production `wrangler.toml`. |
+| N-4 | **P2** (real, overrated) | Minimal: 401 before `McpAgent.serve` so unauth `initialize` / `tools/list` do not allocate DOs. |
+| N-5 | Must-fix (with N-2) | Drop `EXPIRED` from the 24h human-deny window. |
+| N-6–N-11 | P2 | Out of scope. |
+
+Fable audit PR #9 is the docs archive. Do not merge it into this work.
 
 ## Product
 
