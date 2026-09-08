@@ -166,6 +166,8 @@ export type RequestSpendResult = {
   currency: string;
   createdAt: string;
   lockedCart: LockedCart;
+  /** Browser Approve page. Agent must present this — never complete Approve. */
+  approveUrl: string;
   supersededSpendRequestId?: string;
   cartDiff?: CartDiff;
 };
@@ -206,13 +208,16 @@ export const AGENT_MCP_TOOLS = [
 ] as const;
 
 /**
- * SCAFFOLD ONLY — production Approve is not implemented (HTTP 501).
- * A future host must POST a signed OOB assertion. Raw `decidedBy` is never enough.
+ * First testable Approve: local HMAC-signed browser page → POST /host/spend-decision.
+ * This is not passkey/WebAuthn. Raw `decidedBy` is never enough.
  */
 export const OOB_ASSERTION_CONTRACT = {
-  scaffoldOnly: true,
-  transport: "POST /host/spend-decision with Authorization: Bearer <jwt-or-hmac>",
-  type: "JWT or HMAC over a WebAuthn/passkey-bound OOB session — never a chat click",
+  scaffoldOnly: false,
+  localHmacOnly: true,
+  notPasskey: true,
+  transport:
+    "GET /approve?… then POST /host/spend-decision with Authorization: Bearer <jwt-or-hmac> (or form field assertion=)",
+  type: "HS256 JWT or compact HMAC (mb1.<payload>.<mac>) minted by the Worker — not WebAuthn yet",
   requiredClaims: {
     iss: "money-bot-oob",
     aud: "money-bot",
@@ -221,7 +226,7 @@ export const OOB_ASSERTION_CONTRACT = {
     jti: "unique assertion id (replay protection)",
     spendRequestId: "sr_…",
     tenantId:
-      "authenticated Cursor user id from the signed assertion + host session — never anonymous, never a JSON body field",
+      "from the verified assertion only — never anonymous, never a JSON body field",
     decision: "approved | denied",
     lockedCartFingerprint:
       "MUST equal the stored locked-cart fingerprint (binds token to amount+merchantDomain+currency+shipping+checkoutUrl)",

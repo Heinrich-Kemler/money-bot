@@ -18,5 +18,5 @@
     "types": ["@cloudflare/workers-types"]
   },
   "include": ["worker-configuration.d.ts", "src/**/*.ts"],
-  "exclude": ["node_modules", "src/logic.test.ts"]
+  "exclude": ["node_modules", "src/logic.test.ts", "src/approve.test.ts"]
 }

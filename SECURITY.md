@@ -1,6 +1,6 @@
 # Money Bot security
 
-> **SCAFFOLD ONLY — not production.** There is **no** working Approve path. `POST /host/spend-decision` and `POST /host/checkout-outcome` return **501** and document the signed OOB contract. They do **not** read `tenantId` or `decidedBy` from the body. Do not process live spend.
+> **Not production.** First testable Approve is **local HMAC-signed browser Approve**, not passkey/WebAuthn. `POST /host/spend-decision` verifies a signed JWT/HMAC and never reads `tenantId` / `decidedBy` from the body. `POST /host/checkout-outcome` is still **501**. Do not process live spend.
 
 Primary name: **Money Bot** (`money-bot`).  
 Internal metaphor only: the **Spend Gate** is the state machine below.
@@ -31,8 +31,8 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 - **`checkoutUrl` is the money path.** Locked to `merchantDomain` at `request_spend`, re-snapshotted at Approve, and the only URL `prepare_checkout_handoff` will return. Host ≠ lock → reject. No `merchantUrl` fallback.
 - Approve **locks the cart**: amount + merchant + domain + checkoutUrl + shipping. OOB token **must bind `lockedCartFingerprint`**.
-- **Approve is out-of-band** (planned phone passkey / PWA). A chat button may only *initiate* that flow. **The agent must never press Approve.**
-- **SCAFFOLD:** host decide/outcome endpoints are **501 stubs** (`OOB_ASSERTION_CONTRACT` in `src/types.ts`). No half-wired “trust the string” Approve. No unauthenticated `applyHostDecision` behind a config flag.
+- **Approve is out-of-band** via `GET /approve` (local HMAC; planned later: phone passkey / PWA). A chat result may only *initiate* that flow (`approveUrl`). **The agent must never press Approve.**
+- Host decide verifies a signed assertion (`OOB_ASSERTION_CONTRACT` in `src/types.ts`) and calls `applyDecision` only with `assertionVerified: true`. Outcome remains **501**. No `DEV_MODE` Approve switch.
 - `DENIED` and `EXPIRED` are terminal from `PENDING` and share the retry cooldown.
 - If `spendCap` is present, it must be ≥ amount. Cap edits (host-only helper) never grant approval.
 
@@ -46,8 +46,8 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
        │ initiate OOB (planned)          │ per-tenant DO
        ▼                                 │
 ┌─────────────┐                          ▼
-│ Human device│  planned passkey  ┌──────────────────┐
-│ (Approve)   │                   │ Merchant checkout│
+│ Human device│  local HMAC page  ┌──────────────────┐
+│ (Approve)   │  (not passkey)    │ Merchant checkout│
 │             │  locked URL only  │ (human browser)  │
 └─────────────┘                   └──────────────────┘
 ```
@@ -77,9 +77,10 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 - `AUTO_APPROVE_MAX = 0`.
 - No decide tool on the agent MCP surface. `DEV_MODE` does not exist as an Approve switch.
 - `applyDecision` requires `assertionVerified`. Raw `decidedBy: "human"` is rejected. `decidedBy: "agent"` is rejected. Client-supplied actor strings are not stored.
-- Host decide does not parse the body (`tenantId` / `decidedBy` ignored). Always 501.
+- Host decide verifies JWT/HMAC claims (`iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, `lockedCartFingerprint`). Body `tenantId` / `decidedBy` are ignored.
+- Missing/bad signature, expiry, fingerprint mismatch, and replayed `jti` are rejected.
 - Missing `props.userId` **fails closed** (no `"anonymous"` Durable Object).
-- **TODO(host-approval-bridge):** signed OOB JWT/HMAC with `tenantId`, `spendRequestId`, `decision`, `lockedCartFingerprint`.
+- `ALLOW_TEST_AUTH=true` + `Authorization: Bearer test:<userId>` is **local only**. Production `wrangler.toml` keeps this unset.
 
 ### 2. Prompt-injection forced spend
 
@@ -87,7 +88,7 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 
 **Mitigations**
 
-- Only a future verified OOB host path can set `APPROVED` (not wired).
+- Only `POST /host/spend-decision` with a verified assertion can set `APPROVED`.
 - Deny/expire are terminal and share a cooldown.
 - Approval UI (when built) must show the **locked cart** from the spend record.
 
@@ -161,7 +162,7 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 ## v0 non-goals
 
 - No Revolut Business connect, Cards API, virtual PAN, or payment-brand integrations.
-- No in-chat / agent-clickable Approve — **501 signed-OOB contract** only.
+- No in-chat / agent-clickable Approve — browser `/approve` + signed assertion only (not passkey yet).
 - No agent-callable payment outcome.
 - No production per-user public OAuth (it does not exist for Revolut Business).
 - No claim of FCA / KNF authorisation or PCI certification.

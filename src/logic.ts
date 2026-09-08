@@ -230,6 +230,7 @@ export function createPendingSpendRequest(
 
 export function toRequestSpendResult(
   request: SpendRequest,
+  extras: { approveUrl: string },
 ): RequestSpendResult {
   return {
     spendRequestId: request.spendRequestId,
@@ -239,6 +240,7 @@ export function toRequestSpendResult(
     currency: request.currency,
     createdAt: request.createdAt,
     lockedCart: request.lockedCart,
+    approveUrl: extras.approveUrl,
     supersededSpendRequestId: request.supersededSpendRequestId,
     cartDiff: request.cartDiff,
   };

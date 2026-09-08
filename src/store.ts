@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  applyDecision,
   applyTenantReauth,
   assertSameTenant,
   cartFromInput,
@@ -13,10 +14,12 @@ import {
   SpendError,
   supersedeLockedRequest,
 } from "./logic.ts";
+import { assertFingerprintMatch, assertJtiUnused } from "./decision.ts";
 import { redactPaymentSecrets } from "./sanitize.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 import type {
   CheckoutHandoffResult,
+  SpendDecision,
   SpendRequest,
   TenantConnection,
 } from "./types.ts";
@@ -148,6 +151,40 @@ export class SpendStore extends DurableObject<Env> {
         await this.putRequest(current);
       }
       return ok(current);
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  async applyHostDecision(
+    spendRequestId: string,
+    tenantId: string,
+    decision: SpendDecision,
+    opts: {
+      assertionVerified: true;
+      jti: string;
+      lockedCartFingerprint: string;
+    },
+  ): Promise<StoreResult<SpendRequest>> {
+    try {
+      if (opts.assertionVerified !== true) {
+        throw new SpendError(
+          "Approve/Deny requires a verified signed OOB assertion.",
+        );
+      }
+      const current = unwrapStore(
+        await this.getForTenant(spendRequestId, tenantId),
+      );
+      assertFingerprintMatch(current, opts.lockedCartFingerprint);
+      const jtiKey = `jti:${opts.jti}`;
+      const used = await this.ctx.storage.get<{ usedAt: string }>(jtiKey);
+      assertJtiUnused(used);
+      await this.ctx.storage.put(jtiKey, { usedAt: new Date().toISOString() });
+      const next = applyDecision(current, decision, {
+        assertionVerified: true,
+      });
+      await this.putRequest(next);
+      return ok(next);
     } catch (error) {
       return fail(error);
     }

@@ -18,9 +18,10 @@ invocation_logs = false
 enabled = false
 
 # Hard security: never auto-approve. Value is documented and ignored if raised.
-# Secrets (Revolut OAuth, etc.) MUST be set via `wrangler secret` / secret-request
-# — never commit them here.
+# Secrets (APPROVAL_HMAC_SECRET, future Revolut wizard creds) MUST be set via
+# `wrangler secret` / .dev.vars — never commit them here.
 # DEV_MODE does not exist: flipping a boolean must never enable Approve.
+# ALLOW_TEST_AUTH must stay unset here (default false). Local-only in .dev.vars.
 [vars]
 AUTO_APPROVE_MAX = "0"
 
