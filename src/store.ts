@@ -1,8 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  applyCheckoutOutcome,
   applyDecision,
   assertSameTenant,
+  cartFromInput,
   createPendingSpendRequest,
+  editSpendCap,
+  findLockedCartMismatch,
   isRetryOfDenied,
   maybeExpire,
   prepareHandoff,
@@ -10,7 +14,9 @@ import {
 } from "./logic.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 import type {
+  ChallengeInfo,
   CheckoutHandoffResult,
+  CheckoutOutcome,
   SpendDecision,
   SpendRequest,
 } from "./types.ts";
@@ -62,7 +68,25 @@ export class SpendStore extends DurableObject<Env> {
         );
       }
 
-      const request = createPendingSpendRequest(input, tenantId);
+      const nextCart = cartFromInput(input);
+      const sameLock = existing.find(
+        (record) =>
+          (record.status === "APPROVED" ||
+            record.status === "WAITING_FOR_YOU" ||
+            record.status === "CHALLENGE") &&
+          !findLockedCartMismatch([record], nextCart),
+      );
+      if (sameLock) {
+        throw new SpendError(
+          `Cart already locked on ${sameLock.spendRequestId} (${sameLock.status}). ` +
+            "Use prepare_checkout_handoff. The agent cannot self-approve.",
+        );
+      }
+      const mismatch = findLockedCartMismatch(existing, nextCart);
+      const request = createPendingSpendRequest(input, tenantId, {
+        supersededSpendRequestId: mismatch?.request.spendRequestId,
+        cartDiff: mismatch?.diff,
+      });
       await this.ctx.storage.put(request.spendRequestId, request);
       const ids = await this.readIndex();
       ids.push(request.spendRequestId);
@@ -118,6 +142,41 @@ export class SpendStore extends DurableObject<Env> {
       const { request, result } = prepareHandoff(current);
       await this.ctx.storage.put(spendRequestId, request);
       return ok(result);
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  async editCap(
+    spendRequestId: string,
+    tenantId: string,
+    spendCap: number,
+  ): Promise<StoreResult<SpendRequest>> {
+    try {
+      const current = unwrapStore(
+        await this.getForTenant(spendRequestId, tenantId),
+      );
+      const next = editSpendCap(current, spendCap);
+      await this.ctx.storage.put(spendRequestId, next);
+      return ok(next);
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  async reportOutcome(
+    spendRequestId: string,
+    tenantId: string,
+    outcome: CheckoutOutcome,
+    opts: { challengeKind?: ChallengeInfo["kind"]; orderId?: string } = {},
+  ): Promise<StoreResult<SpendRequest>> {
+    try {
+      const current = unwrapStore(
+        await this.getForTenant(spendRequestId, tenantId),
+      );
+      const next = applyCheckoutOutcome(current, outcome, opts);
+      await this.ctx.storage.put(spendRequestId, next);
+      return ok(next);
     } catch (error) {
       return fail(error);
     }

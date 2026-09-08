@@ -13,8 +13,9 @@ export function registerGetSpendStatus(
     "get_spend_status",
     {
       description:
-        "Return the full spend-request status, including decision and audit fields. " +
-        "Never returns payment credentials.",
+        "Return the full spend-request status using the Money Bot state machine: " +
+        "PENDING | APPROVED | WAITING_FOR_YOU | PAID | CHALLENGE | FAILED | DENIED | EXPIRED. " +
+        "Includes locked cart, audit, and challenge fields. Never returns payment credentials.",
       inputSchema: getSpendStatusInputSchema,
     },
     async ({ spendRequestId }) => {
@@ -31,11 +32,18 @@ export function registerGetSpendStatus(
           status: request.status,
           merchantName: request.merchantName,
           merchantUrl: request.merchantUrl,
+          merchantDomain: request.merchantDomain,
           amount: request.amount,
           currency: request.currency,
+          shipping: request.shipping,
+          lockedCart: request.lockedCart,
+          spendCap: request.spendCap,
           checkoutUrl: request.checkoutUrl,
           description: request.description,
           lineItems: request.lineItems,
+          cartDiff: request.cartDiff,
+          supersededSpendRequestId: request.supersededSpendRequestId,
+          challenge: request.challenge,
           createdAt: request.createdAt,
           updatedAt: request.updatedAt,
           decidedAt: request.decidedAt,

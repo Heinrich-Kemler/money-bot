@@ -1,29 +1,50 @@
 # Open questions
 
-Tracked decisions for Money Bot (`money-bot`). Nothing here is implemented as card minting.
+Tracked decisions for Money Bot (`money-bot`). The public name is **Money Bot**; “Spend Gate” is only an internal name for the state machine.
 
-## Revolut Business Cards API and app review
+v0 is approval + handoff. **Do not implement** Revolut Business connect, card minting, or PCI PAN handling.
 
-v1 (docs/stubs only) should mint **single-use virtual cards** via the Revolut **Business Cards** API, amount-capped and time-boxed, then freeze after capture or failure.
+## Revolut Business Cards API (v1 — document only)
 
-Open:
+Verified product facts (not implemented):
 
-- What is the current Business Cards API partner / app-review path (UK entity vs EU entity)?
-- Which scopes are required to create, retrieve (into a browser-only channel), and freeze cards?
-- Can PAN be injected into checkout fields without the PAN ever entering MCP tool results or Worker logs?
-- Rate limits, webhook events (`card.transaction.*`), and 3DS challenges on virtual cards?
-- Confirm again: **do not** use Revolut Merchant API (that is for accepting payments, the wrong direction).
-- Confirm again: personal Revolut has **no** card-issue API.
+- **Virtual cards only** (no physical issue).
+- **Single-transaction** limit plus **one periodic** limit.
+- **Freeze / terminate** after capture or failure.
+- **`TransactionCreated`** webhook for settlement / fail.
+- Sensitive data requires **`READ_SENSITIVE_CARD_DATA`** and an **IP allowlist**.
+- Reveal PAN only into browser fields — never into chat, MCP tool results, memory, or transcripts.
+- **Do not** use Revolut Merchant API (collecting as a merchant — wrong direction).
+- Personal Revolut has **no** card-issue API.
+
+Still open:
+
+- Business Cards API partner / app-review path (UK entity vs EU entity).
+- Exact scopes to create, retrieve (browser-only channel), freeze, and subscribe to `TransactionCreated`.
+- How to inject PAN into checkout fields without the PAN entering the Worker or model.
 
 ## UK vs EU legal entity
 
 Stripe Link is region-locked for many EU users; Money Bot is aimed at UK/EU checkouts.
 
+SCA is still live: UK ~**£25**, EU ~**€30**. Amex SafeKey ~**4 min**; Revolut 3DS ~**5 min**. The machine already has **CHALLENGE**.
+
 Open:
 
-- Does v1 need a UK Ltd, an EU entity, or both for Revolut Business + card issuing?
-- SCA / PSD2 / consumer-duty implications when an agent initiates checkout but a human authenticates?
-- VAT, merchant-of-record, and whether Money Bot is ever in the funds flow (v0: no; v1: user's own Business account only).
+- UK Ltd vs EU entity (or both) for Revolut Business + card issuing.
+- SCA / PSD2 / consumer-duty when an agent initiates checkout but a human authenticates.
+- VAT / merchant-of-record: v0 never in the funds flow; v1 uses the user’s own Business account only.
+
+## Checkout UX (v0 facts to keep)
+
+- Apple Pay on desktop **non-Safari**: QR scan on iPhone (**iOS 18+**), ~**30s**.
+- Revolut Pay: QR + in-app approve when the merchant supports it; else Apple Pay fallback.
+- Never show a raw PAN in chat.
+
+Open:
+
+- How the host surfaces QR timing (“scan within ~30s”) next to Approve/Deny.
+- Whether `CHALLENGE` should page the human or only update `get_spend_status`.
 
 ## Cursor marketplace listing for payments plugins
 
@@ -32,23 +53,32 @@ Open:
 - Review bar for plugins that can move money even with human-in-the-loop?
 - Required security questionnaire, PCI statements, and whether a Worker URL + `${MONEY_BOT_MCP_URL}` variable is acceptable?
 - How secret-request / vault env is declared for later Revolut OAuth (per user, never in git)?
-- Dual layout: this repo is a single plugin (`name`: `money-bot`) with manifests at repo root and a copy under `plugin/` as specified by the scaffold.
 
 ## Host Approve / Deny UI
 
-`autoApproveMax` is fixed at **0**. `request_spend` only creates `pending_approval`.
+`autoApproveMax` is **0**. `request_spend` only creates `PENDING`. Approve must display the **locked cart** (amount, merchant, domain, shipping).
 
-**TODO(host-approval-bridge):** Cursor (or another host) must show Approve/Deny in chat, Stripe Link parity, then POST a signed decision to `/host/spend-decision`.
+**TODO(host-approval-bridge):** Cursor (or another host) shows Approve/Deny (Stripe Link parity), then POSTs a signed decision to `/host/spend-decision`.
 
 Open:
 
-- Official host API for payment-style approvals (buttons, amount preview, merchant URL)?
-- How the host authenticates to the Worker and binds Cursor user → `tenantId` / OAuth props?
-- Timeout / expiry UX when the human never decides (v0 expires pending requests after 30 minutes)?
-- Until that lands: `DEV_MODE=true` exposes `dev_set_spend_decision` and `POST /dev/spend-decision` for local tests only.
+- Official host API for payment-style approvals (buttons, locked-cart preview, merchant domain)?
+- Binding Cursor user → `tenantId` / OAuth props?
+- Timeout UX: `PENDING` expires after 30 minutes; `CHALLENGE` should wait ~4–5 minutes without flipping to `EXPIRED`.
+- `DEV_MODE=true` exposes `dev_set_spend_decision` and `POST /dev/spend-decision` only.
+
+## Mandate / token patterns
+
+Money Bot mirrors principles from:
+
+- **AP2 Cart Mandate** — cart frozen at human approval
+- **MCP Agent Pay** scoped tokens — least privilege, short-lived
+- **Stripe SPT** — constrained, purpose-built credentials (v1 cards, not v0)
+
+Open: whether a future host token should encode the locked cart hash.
 
 ## Branding
 
 - **Primary name:** Money Bot
 - **Package / plugin id:** `money-bot`
-- Avoid shipping alternate product names in marketplace copy; “safu agent payments” is descriptive, not the title.
+- “Spend Gate” is an internal metaphor for the state machine, not marketplace copy.

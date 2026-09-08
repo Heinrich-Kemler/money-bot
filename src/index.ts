@@ -89,7 +89,8 @@ export default {
             error: "host_approval_bridge_not_connected",
             message:
               "TODO: Wire Cursor host Approve/Deny UI to this endpoint. " +
-              "autoApproveMax is 0; spend stays pending_approval until a human decides.",
+              "autoApproveMax is 0; spend stays PENDING until a human decides. " +
+              "Approve locks amount + merchant + domain + shipping.",
           },
           501,
         );
@@ -110,10 +111,14 @@ export default {
         id: "money-bot",
         version: "0.1.0",
         mcp: "/mcp",
+        stateMachine:
+          "IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED",
         tools: [
           "request_spend",
           "get_spend_status",
           "prepare_checkout_handoff",
+          "report_checkout_outcome",
+          "edit_spend_cap",
         ],
         autoApproveMax: 0,
         v1: "not_implemented",

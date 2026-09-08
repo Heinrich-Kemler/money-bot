@@ -2,54 +2,69 @@
 name: money-bot
 description: >
   Use Money Bot when an agent needs to pay for a UK/EU online checkout.
-  Human must approve every spend. v0 hands the checkout screen to the human
-  for Apple Pay / Revolut Pay / 3DS. Never handle card numbers.
+  Human must approve every spend. v0 is approval + handoff only — never show
+  a raw PAN. Apple Pay / Revolut Pay / 3DS stay on the human's screen.
 ---
 
 # Money Bot
 
-Primary product name is **Money Bot** (package/id: `money-bot`).
+Primary product name is **Money Bot** (package/id: `money-bot`).  
+“Spend Gate” is only an internal name for the state machine.
 
 ## When to use
 
-- The user (or the task) needs to complete a UK or EU **online checkout**.
+- The user needs a UK or EU **online checkout**.
 - Stripe Link is unavailable or region-locked.
-- The agent has filled (or is filling) a cart and needs a **human-approved** payment path.
+- The cart is filled and needs a **human-approved** payment path.
 
 Do **not** use Money Bot for:
 
-- Storing, minting, or typing card numbers (PAN / CVC / expiry).
-- Revolut **Merchant** API charges (wrong direction — that collects money as a merchant).
-- Personal Revolut card issuance (no card-issue API).
-- Retrying a spend the human already **Denied**.
+- Showing, storing, minting, or typing card numbers (PAN / CVC / expiry).
+- Revolut Business connect or card-issue (v1 is **not implemented**).
+- Revolut **Merchant** API (wrong direction).
+- Retrying a spend that is `DENIED` or `EXPIRED`.
+- Self-approving a cart change after Approve.
+
+## State machine
+
+```
+IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
+               ↘ DENIED | EXPIRED
+```
+
+- `request_spend` → `PENDING` (from IDLE). Include amount, merchant https URL, and shipping when known.
+- Human Approve → `APPROVED` and **locks** amount + merchant + domain + shipping.
+- `prepare_checkout_handoff` → `WAITING_FOR_YOU`.
+- `report_checkout_outcome` → `PAID` | `CHALLENGE` | `FAILED`.
+- Deny / pending timeout → `DENIED` | `EXPIRED` (terminal).
+- If the cart changes after Approve, call `request_spend` again. You get a **new PENDING** with `cartDiff`. You cannot approve it yourself.
+- `edit_spend_cap` changes the cap only. It still needs Approve.
 
 ## v0 flow
 
-1. Fill the merchant cart as usual.
-2. Call `request_spend` with merchant name, https URL, amount, currency (default GBP), and optional checkout URL / line items.
-3. Stop and wait. `autoApproveMax` is **£0**. The host must show **Approve** / **Deny** in chat (Stripe Link parity).
-4. Poll `get_spend_status` with `spendRequestId`.
-   - `pending_approval` — keep waiting; do not invent approval.
-   - `denied` — **stop**. Deny is final for that request. Do not open a new request for the same merchant + amount to bypass the human.
-   - `approved` — call `prepare_checkout_handoff`.
-   - `expired` / `failed` — report the status; do not retry-spam.
-5. `prepare_checkout_handoff` returns a checkout URL and handoff instructions. Open the URL and **hand the screen to the human**.
-6. The human completes Apple Pay, Revolut Pay, or 3-D Secure on that screen.
+1. Fill the merchant cart.
+2. `request_spend` → `{ status: "PENDING", lockedCart, … }`.
+3. Stop. `autoApproveMax` is **£0**. Host shows Approve / Deny.
+4. Poll `get_spend_status`:
+   - `PENDING` — wait; do not invent approval.
+   - `DENIED` / `EXPIRED` — **stop**. Terminal. Do not retry-spam.
+   - `APPROVED` — `prepare_checkout_handoff`.
+   - `WAITING_FOR_YOU` — screen is already with the human.
+   - `CHALLENGE` — 3DS/SCA in progress; hand back to the human and wait.
+   - `PAID` / `FAILED` — report that outcome.
+5. Handoff rules (never a raw PAN in chat):
+   - **Apple Pay** desktop Safari: sheet. Desktop **non-Safari**: human scans QR on iPhone (**iOS 18+**), ~**30s**.
+   - **Revolut Pay**: QR + in-app approve if the merchant supports it; else Apple Pay.
+   - **SCA** still applies UK ~£25 / EU ~€30. Amex SafeKey ~4 min; Revolut 3DS ~5 min. Use `CHALLENGE`.
 
 ## Deny is final
 
-A `denied` spend request cannot be approved later. Do not call `request_spend` again for the same merchant, amount, and currency after a deny. Tell the user the spend was denied and wait for a new, explicit instruction.
+Do not call `request_spend` again for the same merchant, amount, and currency after `DENIED`. Wait for a new, explicit user instruction.
 
 ## Never put credentials in chat
 
-Never read, write, remember, or paste:
-
-- Card PAN, CVC/CVV, expiry, PIN
-- Virtual-card secrets (v1 is **not implemented**)
-- Vault / OAuth client secrets
-
-If a tool result ever looks like it contains a card number, treat it as a bug, discard it, and do not repeat it in chat, memory, or transcripts.
+Never read, write, remember, or paste PAN, CVC/CVV, expiry, PIN, virtual-card secrets, or vault/OAuth secrets. If a tool result looks like a card number, discard it.
 
 ## v1 (do not implement or call)
 
-Future: Revolut **Business Cards** API mints a single-use virtual card with a hard spend cap, reveals PAN only into browser fields, then freezes the card. Personal Revolut has no card-issue API. Do not attempt card minting in v0.
+Revolut **Business Cards** API: virtual only; single-transaction + one periodic limit; freeze/terminate; `TransactionCreated` webhook; `READ_SENSITIVE_CARD_DATA` + IP allowlist. Personal Revolut has no card-issue API. Do not mint cards in v0.

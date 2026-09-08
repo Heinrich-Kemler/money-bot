@@ -13,9 +13,10 @@ export function registerRequestSpend(
     "request_spend",
     {
       description:
-        "Create a human-approval spend request after the cart is filled. " +
-        "autoApproveMax is fixed at £0 — the host MUST surface Approve/Deny " +
-        "(Stripe Link parity). Never include payment credentials.",
+        "Create a PENDING spend request from IDLE after the cart is filled. " +
+        "autoApproveMax is £0 — host must Approve/Deny. Cart (amount, merchant, " +
+        "domain, shipping) locks at Approve. A mismatch opens a new PENDING with a " +
+        "diff; the agent cannot self-approve. Never include payment credentials.",
       inputSchema: requestSpendInputSchema,
     },
     async (input) => {
