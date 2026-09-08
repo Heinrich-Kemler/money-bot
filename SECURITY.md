@@ -31,7 +31,8 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 - **`checkoutUrl` is the money path.** Locked to `merchantDomain` at `request_spend`, re-snapshotted at Approve, and the only URL `prepare_checkout_handoff` will return. Host ≠ lock → reject. No `merchantUrl` fallback.
 - Approve **locks the cart**: amount + merchant + domain + checkoutUrl + shipping. OOB token **must bind `lockedCartFingerprint`**.
-- **Approve is out-of-band** via `GET /approve` (local HMAC; planned later: phone passkey / PWA). A chat result may only *initiate* that flow (`approveUrl`). **The agent must never press Approve.**
+- **Local first-test Approve** is `GET /approve` → `POST /host/spend-decision` (HMAC). `approveUrl` is a **bearer capability**: possession of the URL (human, agent, or smoke script) can complete Approve/Deny by fetching/posting it. Acceptable for local first test only. This does **not** prove a human acted. **TODO:** passkey/WebAuthn / out-of-band device auth.
+- The agent has **no decide MCP tool**. That is the SoD control that holds today — not “the URL is unusable by the agent.”
 - Host decide verifies a signed assertion (`OOB_ASSERTION_CONTRACT` in `src/types.ts`) and calls `applyDecision` only with `assertionVerified: true`. Outcome remains **501**. No `DEV_MODE` Approve switch.
 - `DENIED` and `EXPIRED` are terminal from `PENDING` and share the retry cooldown.
 - If `spendCap` is present, it must be ≥ amount. Cap edits (host-only helper) never grant approval.
@@ -41,22 +42,22 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 ```
 ┌─────────────┐  three tools   ┌──────────────────┐
 │ Cursor host │ ◄────────────► │ Money Bot Worker │
-│ + agent     │  never Approve │ MCP + SpendStore │
+│ + agent     │  no decide tool│ MCP + SpendStore │
 └──────┬──────┘                └─────────┬────────┘
-       │ initiate OOB (planned)          │ per-tenant DO
+       │ approveUrl (bearer; local test) │ per-tenant DO
        ▼                                 │
 ┌─────────────┐                          ▼
-│ Human device│  local HMAC page  ┌──────────────────┐
-│ (Approve)   │  (not passkey)    │ Merchant checkout│
-│             │  locked URL only  │ (human browser)  │
+│ Browser /   │  local HMAC page  ┌──────────────────┐
+│ smoke client│  (not passkey)    │ Merchant checkout│
+│             │  locked URL only  │ (intended human) │
 └─────────────┘                   └──────────────────┘
 ```
 
 | Zone | Trusted for | Not trusted for |
 | --- | --- | --- |
-| Agent / model | The three tools above | **Pressing Approve**, PAN/CVC/expiry, secrets, self-approving a cart diff, marking `PAID` |
-| Chat UI | *Initiating* OOB Approve (when built) | Completing Approve in-chat |
-| Human device (OOB) | Planned passkey/PWA Approve; paying on the merchant page | Being driven by the agent |
+| Agent / model | The three tools above | A **decide MCP tool**, PAN/CVC/expiry, secrets, self-approving a cart diff, marking `PAID`. (It *can* fetch/post `approveUrl` today — that is a local bearer gap, not human proof.) |
+| Chat / tool JSON | Returning `approveUrl` (bearer capability, local first test) | Claiming the click was a verified human |
+| Human device (OOB) | **TODO** passkey/WebAuthn / device auth; paying on the merchant page | Being implied by HMAC URL possession |
 | Worker + SpendStore | Spend state, cart lock, tenant **metadata** (no tokens) | Card minting, PAN, CVV, access JWTs |
 | Per-tenant Revolut (v1, not built) | That tenant’s Business account only | Shared/pooled issuer, public OAuth |
 
@@ -72,15 +73,16 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 
 **Threat.** The model “clicks Approve” or calls a decide tool.
 
-**Mitigations**
+**What is true today**
 
-- `AUTO_APPROVE_MAX = 0`.
-- No decide tool on the agent MCP surface. `DEV_MODE` does not exist as an Approve switch.
+- There is **no decide MCP tool**. `DEV_MODE` does not exist as an Approve switch. `AUTO_APPROVE_MAX = 0`.
 - `applyDecision` requires `assertionVerified`. Raw `decidedBy: "human"` is rejected. `decidedBy: "agent"` is rejected. Client-supplied actor strings are not stored.
 - Host decide verifies JWT/HMAC claims (`iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, `lockedCartFingerprint`). Body `tenantId` / `decidedBy` are ignored.
 - Missing/bad signature, expiry, fingerprint mismatch, and replayed `jti` are rejected.
 - Missing `props.userId` **fails closed** (no `"anonymous"` Durable Object).
 - `ALLOW_TEST_AUTH=true` + `Authorization: Bearer test:<userId>` is **local only**. Production `wrangler.toml` keeps this unset.
+
+**Residual (local first test only).** `approveUrl` is a **bearer capability**. Possession of the URL — including by the agent or the smoke script — can complete Approve/Deny by fetching the page and posting the server-minted assertion. That is acceptable for local first test. It does **not** prove a human acted. **TODO:** passkey/WebAuthn / out-of-band device auth.
 
 ### 2. Prompt-injection forced spend
 
@@ -162,7 +164,7 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 ## v0 non-goals
 
 - No Revolut Business connect, Cards API, virtual PAN, or payment-brand integrations.
-- No in-chat / agent-clickable Approve — browser `/approve` + signed assertion only (not passkey yet).
+- No decide MCP tool. Local `/approve` is a bearer URL + signed assertion (not passkey; not human proof).
 - No agent-callable payment outcome.
 - No production per-user public OAuth (it does not exist for Revolut Business).
 - No claim of FCA / KNF authorisation or PCI certification.
