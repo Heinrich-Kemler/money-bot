@@ -2,14 +2,17 @@ import { DurableObject } from "cloudflare:workers";
 import {
   applyCheckoutOutcome,
   applyDecision,
+  applyTenantReauth,
   assertSameTenant,
   cartFromInput,
   createPendingSpendRequest,
+  defaultTenantConnection,
   editSpendCap,
   findLockedCartMismatch,
   isRetryOfDenied,
   maybeExpire,
   prepareHandoff,
+  refreshTenantConnection,
   SpendError,
 } from "./logic.ts";
 import type { RequestSpendInput } from "./schemas.ts";
@@ -19,9 +22,11 @@ import type {
   CheckoutOutcome,
   SpendDecision,
   SpendRequest,
+  TenantConnection,
 } from "./types.ts";
 
 const INDEX_KEY = "index:ids";
+const TENANT_KEY = "tenant:connection";
 
 export type StoreResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -97,6 +102,17 @@ export class SpendStore extends DurableObject<Env> {
     }
   }
 
+  async getTenantConnection(tenantId: string): Promise<TenantConnection> {
+    const stored =
+      (await this.ctx.storage.get<TenantConnection>(TENANT_KEY)) ??
+      defaultTenantConnection(tenantId);
+    const current = refreshTenantConnection(stored);
+    if (current !== stored) {
+      await this.ctx.storage.put(TENANT_KEY, current);
+    }
+    return current;
+  }
+
   async getForTenant(
     spendRequestId: string,
     tenantId: string,
@@ -107,7 +123,9 @@ export class SpendStore extends DurableObject<Env> {
         throw new SpendError("Spend request not found.");
       }
       assertSameTenant(stored, tenantId);
-      const current = maybeExpire(stored);
+      const tenant = await this.getTenantConnection(tenantId);
+      let current = maybeExpire(stored);
+      current = applyTenantReauth(current, tenant);
       if (current !== stored) {
         await this.ctx.storage.put(spendRequestId, current);
       }

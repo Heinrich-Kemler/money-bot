@@ -14,17 +14,17 @@ export function registerRequestSpend(
     {
       description:
         "Create a PENDING spend request from IDLE after the cart is filled. " +
-        "autoApproveMax is £0 — host must Approve/Deny. Cart (amount, merchant, " +
-        "domain, shipping) locks at Approve. A mismatch opens a new PENDING with a " +
-        "diff; the agent cannot self-approve. Never include payment credentials.",
+        "autoApproveMax is £0. A chat control may only *initiate* out-of-band " +
+        "Approve (phone passkey/PWA) — the agent must never press Approve. " +
+        "Cart (amount, merchant, domain, shipping) locks at Approve. Never include payment credentials.",
       inputSchema: requestSpendInputSchema,
     },
     async (input) => {
       try {
-        // TODO(host-approval-bridge): Cursor/host must present Approve/Deny
-        // in chat for this spendRequestId. This Worker never auto-approves
-        // (AUTO_APPROVE_MAX is hardcoded to 0). Wire the host UI to
-        // POST /host/spend-decision once the marketplace approval surface exists.
+        // TODO(host-approval-bridge): Chat may only *initiate* Approve.
+        // The human must confirm out-of-band (phone passkey / PWA).
+        // The agent must never be able to press Approve (Ramp-style SoD).
+        // Wire a signed OOB decision to POST /host/spend-decision.
         void AUTO_APPROVE_MAX;
 
         const ctx = getCtx();

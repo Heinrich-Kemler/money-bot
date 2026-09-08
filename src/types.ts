@@ -3,8 +3,13 @@
  *
  *   IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
  *                    ↘ DENIED | EXPIRED
+ *                    ↘ REAUTH_REQUIRED  (90-day tenant re-consent; v1 Revolut)
  *
  * IDLE is the empty machine (no active request). It is not persisted.
+ *
+ * Tenant connection (separate, exists from day one):
+ *   NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
+ * Revolut Business is optional in v0. There is no public OAuth.
  *
  * Legacy names (aliases only, not stored):
  *   pending_approval → PENDING
@@ -25,6 +30,7 @@ export const SPEND_STATUSES = [
   "FAILED",
   "DENIED",
   "EXPIRED",
+  "REAUTH_REQUIRED",
 ] as const;
 
 export type SpendStatus = (typeof SPEND_STATUSES)[number];
@@ -43,6 +49,36 @@ export type CheckoutOutcome = (typeof COMPLETION_FROM_HANDOFF)[number];
 
 export const DECISIONS = ["approved", "denied"] as const;
 export type SpendDecision = (typeof DECISIONS)[number];
+
+/**
+ * Per-tenant Revolut Business connection.
+ * No public OAuth: cert + client_id + JWT + Enable access (wizard, not one-tap).
+ * Access token ~40 minutes; refresh requires ~90-day re-consent.
+ * Never store PAN, CVV, or access tokens in this object.
+ */
+export const TENANT_CONNECTION_STATUSES = [
+  "NOT_CONNECTED",
+  "CONNECTED",
+  "REAUTH_REQUIRED",
+] as const;
+
+export type TenantConnectionStatus = (typeof TENANT_CONNECTION_STATUSES)[number];
+
+export type TenantConnection = {
+  tenantId: string;
+  status: TenantConnectionStatus;
+  /** Revolut is optional in v0; false until a v1 wizard completes. */
+  revolutConnected: boolean;
+  connectedAt?: string;
+  /** 90-day Enable-access / re-consent deadline. */
+  consentExpiresAt?: string;
+  /** Access-token lifetime hint (~40m). Never persist the token. */
+  accessTokenExpiresAt?: string;
+  updatedAt: string;
+};
+
+export const REVOLUT_ACCESS_TOKEN_TTL_MS = 40 * 60 * 1000;
+export const REVOLUT_RECONSENT_MS = 90 * 24 * 60 * 60 * 1000;
 
 export type LineItem = {
   name: string;
@@ -102,6 +138,12 @@ export type SpendRequest = {
   cartDiff?: CartDiff;
   supersededSpendRequestId?: string;
   challenge?: ChallengeInfo;
+  /**
+   * v1 only: spend is bound to this tenant's Revolut Business.
+   * v0 handoff (Apple Pay / Revolut Pay) does not require a connection.
+   */
+  requiresTenantConnection: boolean;
+  statusBeforeReauth?: PersistedSpendStatus;
   createdAt: string;
   updatedAt: string;
   decidedAt?: string;
@@ -123,7 +165,9 @@ export type RequestSpendResult = {
   cartDiff?: CartDiff;
 };
 
-export type SpendStatusResult = SpendRequest;
+export type SpendStatusResult = SpendRequest & {
+  tenantConnection: TenantConnection;
+};
 
 export type CheckoutHandoffResult = {
   spendRequestId: string;

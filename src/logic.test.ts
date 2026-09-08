@@ -3,7 +3,9 @@ import { describe, it } from "node:test";
 import {
   applyCheckoutOutcome,
   applyDecision,
+  applyTenantReauth,
   createPendingSpendRequest,
+  defaultTenantConnection,
   diffLockedCart,
   editSpendCap,
   findLockedCartMismatch,
@@ -11,9 +13,12 @@ import {
   maybeExpire,
   merchantDomainFromUrl,
   prepareHandoff,
+  refreshTenantConnection,
+  resumeAfterReauth,
   SpendError,
   toRequestSpendResult,
 } from "./logic.ts";
+import { REVOLUT_RECONSENT_MS } from "./types.ts";
 import { redactPaymentSecrets } from "./sanitize.ts";
 import type { SpendRequest } from "./types.ts";
 
@@ -192,6 +197,59 @@ describe("expiry", () => {
     const approved = applyDecision(pending(), "approved", { decidedBy: "human" });
     const aged = { ...approved, expiresAt: new Date(Date.now() - 1000).toISOString() };
     assert.equal(maybeExpire(aged).status, "APPROVED");
+  });
+});
+
+describe("out-of-band approve", () => {
+  it("rejects decidedBy=agent", () => {
+    assert.throws(
+      () => applyDecision(pending(), "approved", { decidedBy: "agent" }),
+      (error: unknown) =>
+        error instanceof SpendError && /cannot Approve/.test(error.message),
+    );
+  });
+});
+
+describe("REAUTH_REQUIRED", () => {
+  it("defaults v0 tenants to NOT_CONNECTED (Revolut optional)", () => {
+    const tenant = defaultTenantConnection("user-1");
+    assert.equal(tenant.status, "NOT_CONNECTED");
+    assert.equal(tenant.revolutConnected, false);
+    assert.equal(pending().requiresTenantConnection, false);
+  });
+
+  it("marks CONNECTED tenants REAUTH_REQUIRED after 90 days", () => {
+    const connected = refreshTenantConnection({
+      tenantId: "user-1",
+      status: "CONNECTED",
+      revolutConnected: true,
+      connectedAt: new Date(Date.now() - REVOLUT_RECONSENT_MS - 1000).toISOString(),
+      consentExpiresAt: new Date(Date.now() - 1000).toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    assert.equal(connected.status, "REAUTH_REQUIRED");
+  });
+
+  it("pauses only v1-bound spends when the tenant needs re-consent", () => {
+    const tenant: ReturnType<typeof defaultTenantConnection> = {
+      ...defaultTenantConnection("user-1"),
+      status: "REAUTH_REQUIRED",
+      revolutConnected: true,
+      consentExpiresAt: new Date(Date.now() - 1000).toISOString(),
+    };
+    const v0 = applyTenantReauth(pending(), tenant);
+    assert.equal(v0.status, "PENDING");
+    const v1 = applyTenantReauth(
+      { ...pending(), requiresTenantConnection: true },
+      tenant,
+    );
+    assert.equal(v1.status, "REAUTH_REQUIRED");
+    assert.equal(v1.statusBeforeReauth, "PENDING");
+    assert.throws(
+      () => resumeAfterReauth(v1, tenant),
+      (error: unknown) =>
+        error instanceof SpendError && /wizard/.test(error.message),
+    );
   });
 });
 

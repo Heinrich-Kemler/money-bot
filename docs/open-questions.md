@@ -1,84 +1,77 @@
 # Open questions
 
-Tracked decisions for Money Bot (`money-bot`). The public name is **Money Bot**; “Spend Gate” is only an internal name for the state machine.
+Tracked decisions for Money Bot (`money-bot`). “Spend Gate” is internal only.
 
-v0 is approval + handoff. **Do not implement** Revolut Business connect, card minting, or PCI PAN handling.
+v0 is approval + handoff. Revolut is **optional**. **Do not implement** Revolut Business connect, card minting, or PCI PAN handling.
 
-## Revolut Business Cards API (v1 — document only)
+## Revolut Business connect (v1 — no public OAuth)
 
-Verified product facts (not implemented):
+Verified:
 
-- **Virtual cards only** (no physical issue).
-- **Single-transaction** limit plus **one periodic** limit.
-- **Freeze / terminate** after capture or failure.
-- **`TransactionCreated`** webhook for settlement / fail.
-- Sensitive data requires **`READ_SENSITIVE_CARD_DATA`** and an **IP allowlist**.
-- Reveal PAN only into browser fields — never into chat, MCP tool results, memory, or transcripts.
-- **Do not** use Revolut Merchant API (collecting as a merchant — wrong direction).
-- Personal Revolut has **no** card-issue API.
-
-Still open:
-
-- Business Cards API partner / app-review path (UK entity vs EU entity).
-- Exact scopes to create, retrieve (browser-only channel), freeze, and subscribe to `TransactionCreated`.
-- How to inject PAN into checkout fields without the PAN entering the Worker or model.
-
-## UK vs EU legal entity
-
-Stripe Link is region-locked for many EU users; Money Bot is aimed at UK/EU checkouts.
-
-SCA is still live: UK ~**£25**, EU ~**€30**. Amex SafeKey ~**4 min**; Revolut 3DS ~**5 min**. The machine already has **CHALLENGE**.
+- There is **no public OAuth** for Revolut Business.
+- Connect is a **wizard**, not one-tap: per-tenant **certificate** + **`client_id`** + **JWT** + **Enable access**.
+- Access token ~**40 minutes**. Refresh / Enable access needs **~90-day re-consent** → tenant and (v1-bound) spend status `REAUTH_REQUIRED`.
+- Revolut is **optional in v0**. The `REAUTH_REQUIRED` state exists from day one so v1 does not retrofit the machine.
 
 Open:
 
-- UK Ltd vs EU entity (or both) for Revolut Business + card issuing.
-- SCA / PSD2 / consumer-duty when an agent initiates checkout but a human authenticates.
-- VAT / merchant-of-record: v0 never in the funds flow; v1 uses the user’s own Business account only.
+- Exact wizard UX inside Cursor (MCP Apps iframe vs external PWA).
+- Where the cert and JWT live (per-tenant vault only — never git).
+- Partner / app-review path (UK vs EU entity).
 
-## Checkout UX (v0 facts to keep)
+## No card-issuing-as-a-service
 
-- Apple Pay on desktop **non-Safari**: QR scan on iPhone (**iOS 18+**), ~**30s**.
-- Revolut Pay: QR + in-app approve when the merchant supports it; else Apple Pay fallback.
+Each tenant uses **their** Revolut Business. Money Bot never pools funds or issues cards as a platform. Personal Revolut has no card-issue API. Do not use Revolut Merchant API.
+
+## PCI honesty
+
+- **v0:** never touches PAN → **out of CDE**.
+- **v1 PAN fetch:** **SAQ D** unless a PCI vault/iframe (**Basis Theory / VGS / Skyflow**).
+- **Never store CVV post-auth.**
+- `READ_SENSITIVE_CARD_DATA` + IP allowlist still required for any sensitive retrieve.
+
+Open: which vault/iframe, if any, before attempting Worker-side PAN.
+
+## Out-of-band Approve (Ramp SoD)
+
+Chat may only **initiate** Approve. Completion is **phone passkey / PWA**. The **agent must never press Approve**.
+
+**TODO(host-approval-bridge):** signed OOB assertion → `POST /host/spend-decision`. Not an agent-clickable chat Approve.
+
+Open:
+
+- Passkey / WebAuthn provider and device binding to `tenantId`.
+- How MCP Apps (below) starts the OOB flow without giving the model a decide tool in production.
+
+## MCP Apps + marketplace
+
+- Cursor **2.6+**: sandboxed **iframe card** (MCP Apps) is allowed for connect/approve **initiation**.
+- **Mandatory plain-text fallback** (tool JSON + skill) for hosts without MCP Apps.
+- Cursor marketplace = **manual review**.
+
+Open: listing questionnaire for a payments-adjacent plugin that never holds funds.
+
+## Legal posture
+
+Money Bot is a **technical agent**. It never holds funds, is not an issuer, and is not a payment institution.
+
+- Obtain **FCA** (UK) and **KNF** (PL) advice before v1.
+- Disclaimer belongs in README / marketplace copy (already drafted).
+
+Open: whether any EU entity or EMI partnership is required even for “bring your own Business account” v1.
+
+## Checkout UX (v0)
+
+- Apple Pay desktop non-Safari: iPhone QR, iOS 18+, ~30s.
+- Revolut Pay: QR + in-app approve, else Apple Pay.
 - Never show a raw PAN in chat.
+- SCA UK ~£25 / EU ~€30; Amex SafeKey ~4 min; Revolut 3DS ~5 min → `CHALLENGE`.
 
-Open:
+## Mandate patterns
 
-- How the host surfaces QR timing (“scan within ~30s”) next to Approve/Deny.
-- Whether `CHALLENGE` should page the human or only update `get_spend_status`.
-
-## Cursor marketplace listing for payments plugins
-
-Open:
-
-- Review bar for plugins that can move money even with human-in-the-loop?
-- Required security questionnaire, PCI statements, and whether a Worker URL + `${MONEY_BOT_MCP_URL}` variable is acceptable?
-- How secret-request / vault env is declared for later Revolut OAuth (per user, never in git)?
-
-## Host Approve / Deny UI
-
-`autoApproveMax` is **0**. `request_spend` only creates `PENDING`. Approve must display the **locked cart** (amount, merchant, domain, shipping).
-
-**TODO(host-approval-bridge):** Cursor (or another host) shows Approve/Deny (Stripe Link parity), then POSTs a signed decision to `/host/spend-decision`.
-
-Open:
-
-- Official host API for payment-style approvals (buttons, locked-cart preview, merchant domain)?
-- Binding Cursor user → `tenantId` / OAuth props?
-- Timeout UX: `PENDING` expires after 30 minutes; `CHALLENGE` should wait ~4–5 minutes without flipping to `EXPIRED`.
-- `DEV_MODE=true` exposes `dev_set_spend_decision` and `POST /dev/spend-decision` only.
-
-## Mandate / token patterns
-
-Money Bot mirrors principles from:
-
-- **AP2 Cart Mandate** — cart frozen at human approval
-- **MCP Agent Pay** scoped tokens — least privilege, short-lived
-- **Stripe SPT** — constrained, purpose-built credentials (v1 cards, not v0)
-
-Open: whether a future host token should encode the locked cart hash.
+AP2 Cart Mandate, MCP Agent Pay scoped tokens, Stripe SPT — principles only.
 
 ## Branding
 
-- **Primary name:** Money Bot
-- **Package / plugin id:** `money-bot`
-- “Spend Gate” is an internal metaphor for the state machine, not marketplace copy.
+- **Primary name:** Money Bot (`money-bot`)
+- “Spend Gate” is not marketplace copy.

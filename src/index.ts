@@ -79,18 +79,19 @@ export default {
     }
 
     if (url.pathname === "/host/spend-decision" && request.method === "POST") {
-      // TODO(host-approval-bridge): Production Cursor host should POST here
-      // after the human taps Approve/Deny in chat (Stripe Link parity).
-      // Authenticate the host, map the Cursor user to tenantId / OAuth props,
-      // and never accept agent-originated retries after deny.
+      // TODO(host-approval-bridge): Chat button only *initiates* approval.
+      // Production Approve MUST be out-of-band (phone passkey / PWA).
+      // The agent must never be able to press Approve (Ramp-style SoD).
+      // Authenticate the human device, map Cursor user → tenantId,
+      // and never accept agent-originated decisions.
       if (!isDevMode(env)) {
         return json(
           {
             error: "host_approval_bridge_not_connected",
             message:
-              "TODO: Wire Cursor host Approve/Deny UI to this endpoint. " +
-              "autoApproveMax is 0; spend stays PENDING until a human decides. " +
-              "Approve locks amount + merchant + domain + shipping.",
+              "TODO: Wire an out-of-band Approve (phone passkey/PWA) to this endpoint. " +
+              "A chat button may only start that flow — not complete it. " +
+              "The agent cannot Approve. autoApproveMax is 0.",
           },
           501,
         );
@@ -112,14 +113,14 @@ export default {
         version: "0.1.0",
         mcp: "/mcp",
         stateMachine:
-          "IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED",
+          "IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED (+ DENIED | EXPIRED | REAUTH_REQUIRED)",
         tools: [
           "request_spend",
           "get_spend_status",
           "prepare_checkout_handoff",
-          "report_checkout_outcome",
-          "edit_spend_cap",
         ],
+        approval: "out_of_band_only",
+        revolut: "optional_in_v0",
         autoApproveMax: 0,
         v1: "not_implemented",
       });

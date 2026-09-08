@@ -16,6 +16,7 @@ import {
   type SpendDecision,
   type SpendRequest,
   type SpendStatus,
+  type TenantConnection,
 } from "./types.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 
@@ -151,6 +152,7 @@ export function createPendingSpendRequest(
     lineItems: input.lineItems,
     cartDiff: extras.cartDiff,
     supersededSpendRequestId: extras.supersededSpendRequestId,
+    requiresTenantConnection: false,
     createdAt: nowIso(at),
     updatedAt: nowIso(at),
     expiresAt: expiresAtFrom(at),
@@ -235,6 +237,16 @@ export function applyDecision(
   if (current.status === "EXPIRED") {
     throw new SpendError("This spend request has expired.");
   }
+  if (current.status === "REAUTH_REQUIRED") {
+    throw new SpendError(
+      "Tenant re-authorisation is required (90-day Revolut Business re-consent). Complete the connect wizard; the agent cannot Approve.",
+    );
+  }
+  if (opts.decidedBy === "agent") {
+    throw new SpendError(
+      "The agent cannot Approve. Approval must be out-of-band (phone passkey/PWA). A chat button may only initiate that flow.",
+    );
+  }
   if (current.status !== "PENDING") {
     throw new SpendError(
       `Cannot decide a spend request in status "${current.status}".`,
@@ -284,6 +296,11 @@ export function prepareHandoff(
   at = new Date(),
 ): { request: SpendRequest; result: CheckoutHandoffResult } {
   const current = maybeExpire(request, at);
+  if (current.status === "REAUTH_REQUIRED") {
+    throw new SpendError(
+      "Tenant re-authorisation is required before checkout handoff. Revolut Business uses a 90-day re-consent wizard (no public OAuth).",
+    );
+  }
   if (current.status === "DENIED") {
     throw new SpendError(
       "Deny is final for this spend request. Checkout handoff is not allowed.",
@@ -389,4 +406,88 @@ export function assertSameTenant(
   if (request.tenantId !== tenantId) {
     throw new SpendError("Spend request not found.");
   }
+}
+
+export function defaultTenantConnection(
+  tenantId: string,
+  at = new Date(),
+): TenantConnection {
+  return {
+    tenantId,
+    status: "NOT_CONNECTED",
+    revolutConnected: false,
+    updatedAt: nowIso(at),
+  };
+}
+
+export function refreshTenantConnection(
+  connection: TenantConnection,
+  at = new Date(),
+): TenantConnection {
+  if (connection.status === "NOT_CONNECTED" || !connection.consentExpiresAt) {
+    return connection;
+  }
+  if (at.getTime() > Date.parse(connection.consentExpiresAt)) {
+    return {
+      ...connection,
+      status: "REAUTH_REQUIRED",
+      updatedAt: nowIso(at),
+    };
+  }
+  return connection;
+}
+
+const REAUTH_PAUSEABLE: SpendStatus[] = [
+  "PENDING",
+  "APPROVED",
+  "WAITING_FOR_YOU",
+  "CHALLENGE",
+];
+
+/** Pause a v1-bound spend when the tenant's 90-day consent lapses. v0 handoff is not paused. */
+export function applyTenantReauth(
+  request: SpendRequest,
+  connection: TenantConnection,
+  at = new Date(),
+): SpendRequest {
+  const tenant = refreshTenantConnection(connection, at);
+  if (
+    !request.requiresTenantConnection ||
+    tenant.status !== "REAUTH_REQUIRED" ||
+    !REAUTH_PAUSEABLE.includes(request.status)
+  ) {
+    return request;
+  }
+  return {
+    ...request,
+    status: "REAUTH_REQUIRED",
+    statusBeforeReauth: request.status,
+    updatedAt: nowIso(at),
+  };
+}
+
+export function resumeAfterReauth(
+  request: SpendRequest,
+  connection: TenantConnection,
+  at = new Date(),
+): SpendRequest {
+  const tenant = refreshTenantConnection(connection, at);
+  if (request.status !== "REAUTH_REQUIRED") {
+    throw new SpendError("Spend request is not waiting for re-authorisation.");
+  }
+  if (tenant.status === "REAUTH_REQUIRED") {
+    throw new SpendError(
+      "Complete the Revolut Business connect wizard (cert + client_id + JWT + Enable access). There is no public OAuth or one-tap connect.",
+    );
+  }
+  const previous = request.statusBeforeReauth ?? "PENDING";
+  if (previous === "REAUTH_REQUIRED") {
+    return { ...request, status: "PENDING", updatedAt: nowIso(at) };
+  }
+  return {
+    ...request,
+    status: previous,
+    statusBeforeReauth: undefined,
+    updatedAt: nowIso(at),
+  };
 }

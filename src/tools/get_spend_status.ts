@@ -14,8 +14,8 @@ export function registerGetSpendStatus(
     {
       description:
         "Return the full spend-request status using the Money Bot state machine: " +
-        "PENDING | APPROVED | WAITING_FOR_YOU | PAID | CHALLENGE | FAILED | DENIED | EXPIRED. " +
-        "Includes locked cart, audit, and challenge fields. Never returns payment credentials.",
+        "PENDING | APPROVED | WAITING_FOR_YOU | PAID | CHALLENGE | FAILED | DENIED | EXPIRED | REAUTH_REQUIRED. " +
+        "Includes locked cart, tenantConnection (90-day re-consent), and audit fields. Never returns payment credentials.",
       inputSchema: getSpendStatusInputSchema,
     },
     async ({ spendRequestId }) => {
@@ -27,9 +27,11 @@ export function registerGetSpendStatus(
           return errorToolResult(loaded.error);
         }
         const request = loaded.value;
+        const tenantConnection = await store.getTenantConnection(ctx.tenantId);
         return jsonToolResult({
           spendRequestId: request.spendRequestId,
           status: request.status,
+          tenantConnection,
           merchantName: request.merchantName,
           merchantUrl: request.merchantUrl,
           merchantDomain: request.merchantDomain,
