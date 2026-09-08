@@ -45,12 +45,15 @@ async function applyHostDecision(
         typeof body.denyReason === "string" ? body.denyReason : undefined,
       orderId: typeof body.orderId === "string" ? body.orderId : undefined,
     });
+    if (!updated.ok) {
+      return json({ error: updated.error }, 400);
+    }
     return json({
-      spendRequestId: updated.spendRequestId,
-      status: updated.status,
-      decidedAt: updated.decidedAt,
-      decidedBy: updated.decidedBy,
-      denyReason: updated.denyReason,
+      spendRequestId: updated.value.spendRequestId,
+      status: updated.value.status,
+      decidedAt: updated.value.decidedAt,
+      decidedBy: updated.value.decidedBy,
+      denyReason: updated.value.denyReason,
     });
   } catch (error) {
     const message =

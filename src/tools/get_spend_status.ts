@@ -21,7 +21,11 @@ export function registerGetSpendStatus(
       try {
         const ctx = getCtx();
         const store = spendStoreForTenant(ctx.env, ctx.tenantId);
-        const request = await store.getForTenant(spendRequestId, ctx.tenantId);
+        const loaded = await store.getForTenant(spendRequestId, ctx.tenantId);
+        if (!loaded.ok) {
+          return errorToolResult(loaded.error);
+        }
+        const request = loaded.value;
         return jsonToolResult({
           spendRequestId: request.spendRequestId,
           status: request.status,

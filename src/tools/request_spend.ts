@@ -29,7 +29,10 @@ export function registerRequestSpend(
         const ctx = getCtx();
         const store = spendStoreForTenant(ctx.env, ctx.tenantId);
         const created = await store.createFromInput(input, ctx.tenantId);
-        return jsonToolResult(toRequestSpendResult(created));
+        if (!created.ok) {
+          return errorToolResult(created.error);
+        }
+        return jsonToolResult(toRequestSpendResult(created.value));
       } catch (error) {
         const message =
           error instanceof SpendError

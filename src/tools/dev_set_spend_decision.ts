@@ -39,13 +39,16 @@ export function registerDevSetSpendDecision(
             orderId: input.orderId,
           },
         );
+        if (!updated.ok) {
+          return errorToolResult(updated.error);
+        }
         return jsonToolResult({
-          spendRequestId: updated.spendRequestId,
-          status: updated.status,
-          decidedAt: updated.decidedAt,
-          decidedBy: updated.decidedBy,
-          denyReason: updated.denyReason,
-          orderId: updated.orderId,
+          spendRequestId: updated.value.spendRequestId,
+          status: updated.value.status,
+          decidedAt: updated.value.decidedAt,
+          decidedBy: updated.value.decidedBy,
+          denyReason: updated.value.denyReason,
+          orderId: updated.value.orderId,
         });
       } catch (error) {
         const message =

@@ -23,7 +23,10 @@ export function registerPrepareCheckoutHandoff(
         const ctx = getCtx();
         const store = spendStoreForTenant(ctx.env, ctx.tenantId);
         const result = await store.handoff(spendRequestId, ctx.tenantId);
-        return jsonToolResult(result);
+        if (!result.ok) {
+          return errorToolResult(result.error);
+        }
+        return jsonToolResult(result.value);
       } catch (error) {
         const message =
           error instanceof SpendError
