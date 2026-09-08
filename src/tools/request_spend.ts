@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { buildApproveUrl } from "../approve-page.ts";
 import { requestSpendInputSchema } from "../schemas.ts";
 import { SpendError, toRequestSpendResult } from "../logic.ts";
 import { errorToolResult, jsonToolResult } from "../sanitize.ts";
@@ -14,8 +15,8 @@ export function registerRequestSpend(
     {
       description:
         "Create a PENDING spend request from IDLE after the cart is filled. " +
-        "autoApproveMax is £0. A chat control may only *initiate* out-of-band " +
-        "Approve (phone passkey/PWA) — the agent must never press Approve. " +
+        "autoApproveMax is £0. Returns approveUrl so a human can Approve in the " +
+        "browser (HMAC-signed page). The agent must never press Approve. " +
         "checkoutUrl is the money path and must be https on the merchant domain. " +
         "Cart (amount, merchant, domain, checkoutUrl, shipping) locks at Approve. " +
         "Never include payment credentials.",
@@ -23,10 +24,9 @@ export function registerRequestSpend(
     },
     async (input) => {
       try {
-        // TODO(host-approval-bridge): Chat may only *initiate* Approve.
-        // The human must confirm out-of-band (phone passkey / PWA).
-        // The agent must never be able to press Approve (Ramp-style SoD).
-        // Wire a signed OOB decision to POST /host/spend-decision.
+        // Chat / tool result may only *initiate* Approve via approveUrl.
+        // The human confirms in the browser with a server-minted HMAC assertion.
+        // The agent must never press Approve (no decide tool).
         void AUTO_APPROVE_MAX;
 
         const ctx = getCtx();
@@ -35,7 +35,14 @@ export function registerRequestSpend(
         if (!created.ok) {
           return errorToolResult(created.error);
         }
-        return jsonToolResult(toRequestSpendResult(created.value));
+        const approveUrl = await buildApproveUrl(
+          ctx.env,
+          created.value.spendRequestId,
+          ctx.tenantId,
+        );
+        return jsonToolResult(
+          toRequestSpendResult(created.value, { approveUrl }),
+        );
       } catch (error) {
         const message =
           error instanceof SpendError

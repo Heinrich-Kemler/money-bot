@@ -36,12 +36,15 @@ Open: whether a vault/iframe is a prerequisite before any Worker-side PAN is eve
 
 Chat may only **initiate** Approve. Completion is planned as **phone passkey / PWA**. The **agent must never press Approve**.
 
-**TODO(host-approval-bridge):** **SCAFFOLD / HTTP 501.** A future host must POST a signed OOB JWT/HMAC. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. `tenantId` comes from the assertion + authenticated session — **never** from a JSON body field. Never accept `decidedBy` alone. Do not add a `DEV_MODE` Approve switch.
+**First testable Approve (landed):** local HMAC-signed `GET /approve` page posts a server-minted JWT/HMAC to `POST /host/spend-decision`. Required claims: `iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, **`lockedCartFingerprint`**. `tenantId` comes from the assertion — **never** from a JSON body field. Never accept `decidedBy` alone. No `DEV_MODE` Approve switch.
+
+This is **not** passkey/WebAuthn.
 
 Open:
 
 - Passkey / WebAuthn provider and device binding to `tenantId`.
 - How MCP Apps starts the OOB flow without giving the model a decide tool.
+- Production host identity (`props.userId`) — see issue #4. Local tests use `ALLOW_TEST_AUTH`.
 
 ## MCP Apps + marketplace
 

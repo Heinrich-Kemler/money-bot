@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { buildApproveUrl } from "../approve-page.ts";
 import { getSpendStatusInputSchema } from "../schemas.ts";
 import { SpendError } from "../logic.ts";
 import { errorToolResult, jsonToolResult } from "../sanitize.ts";
@@ -28,9 +29,14 @@ export function registerGetSpendStatus(
         }
         const request = loaded.value;
         const tenantConnection = await store.getTenantConnection(ctx.tenantId);
+        const approveUrl =
+          request.status === "PENDING"
+            ? await buildApproveUrl(ctx.env, request.spendRequestId, ctx.tenantId)
+            : undefined;
         return jsonToolResult({
           spendRequestId: request.spendRequestId,
           status: request.status,
+          approveUrl,
           tenantConnection,
           merchantName: request.merchantName,
           merchantUrl: request.merchantUrl,

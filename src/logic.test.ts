@@ -71,8 +71,11 @@ describe("tenant auth fail-closed", () => {
 describe("request_spend result", () => {
   it("returns PENDING with a locked-cart snapshot and no credentials", () => {
     const created = createPendingSpendRequest(input, "user-1");
-    const result = toRequestSpendResult(created);
+    const result = toRequestSpendResult(created, {
+      approveUrl: "http://localhost:8787/approve?spendRequestId=sr_x&tenantId=user-1",
+    });
     assert.equal(result.status, "PENDING");
+    assert.match(result.approveUrl, /\/approve\?/);
     assert.equal(result.merchantName, "Example Shop");
     assert.equal(result.amount, 12.5);
     assert.equal(result.currency, "GBP");
