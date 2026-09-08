@@ -89,14 +89,20 @@ describe("N-2 supersede scope (same merchantDomain only)", () => {
     assert.equal(waiting.status, "WAITING_FOR_YOU");
   });
 
-  it("explicit supersedes can cancel a named lock at another merchant", () => {
+  it("rejects an explicit agent supersedes at a different merchantDomain", () => {
     const approved = approvedA();
-    const plan = planSpendCreate(
-      [approved],
-      { ...shopB, supersedes: approved.spendRequestId },
+    assert.throws(
+      () =>
+        planSpendCreate(
+          [approved],
+          { ...shopB, supersedes: approved.spendRequestId },
+        ),
+      (error: unknown) =>
+        error instanceof SpendError &&
+        /different merchantDomain/.test(error.message),
     );
-    assert.equal(plan.cancel?.spendRequestId, approved.spendRequestId);
-    assert.ok(plan.extras.cartDiff?.fields.includes("merchantDomain"));
+    const plan = planSpendCreate([approved], shopB);
+    assert.equal(plan.cancel, undefined);
   });
 
   it("rejects an explicit supersedes that is not a locked spend", () => {

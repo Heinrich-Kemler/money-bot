@@ -25,6 +25,7 @@ import {
   type SpendRequest,
   type SpendStatus,
   type TenantConnection,
+  WIDGET_OPTIONS,
 } from "./types.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 
@@ -241,6 +242,19 @@ export function toRequestSpendResult(
     createdAt: request.createdAt,
     lockedCart: request.lockedCart,
     approveUrl: extras.approveUrl,
+    approveUrlLocalSmokeOnly: true,
+    widget: {
+      spendRequestId: request.spendRequestId,
+      merchantName: request.merchantName,
+      amount: request.amount,
+      currency: request.currency,
+      merchantDomain: request.merchantDomain,
+      checkoutUrl: request.lockedCart.checkoutUrl,
+      lockedCartFingerprint:
+        request.lockedCartFingerprint ??
+        lockedCartFingerprint(request.lockedCart),
+      options: WIDGET_OPTIONS,
+    },
     supersededSpendRequestId: request.supersededSpendRequestId,
     cartDiff: request.cartDiff,
   };
@@ -354,8 +368,9 @@ export function findSameLockedCart(
 }
 
 /**
- * N-2: only a same-merchantDomain lock (or an explicit `supersedes` id) can be
- * cancelled. A new request at shop B must never FAIL shop A's APPROVED lock.
+ * N-2 + widget DoD: only a same-merchantDomain lock can be cancelled.
+ * Agent-supplied `supersedes` must be the same merchantDomain (reject
+ * cross-domain). Host-only override is not implemented.
  */
 export function findLockedCartMismatch(
   existing: SpendRequest[],
@@ -364,6 +379,7 @@ export function findLockedCartMismatch(
 ): { request: SpendRequest; diff: CartDiff } | undefined {
   const locked = existing.filter((request) => isLockedStatus(request.status));
   let target: SpendRequest | undefined;
+  const nextDomain = normalizeMerchantDomain(nextCart.merchantDomain);
 
   if (explicitSupersedesId) {
     const named = existing.find(
@@ -379,13 +395,19 @@ export function findLockedCartMismatch(
         `supersedes ${explicitSupersedesId} is ${named.status}, not a locked spend.`,
       );
     }
+    if (normalizeMerchantDomain(named.merchantDomain) !== nextDomain) {
+      throw new SpendError(
+        `supersedes ${explicitSupersedesId} is a different merchantDomain. ` +
+          "Agent-supplied supersedes must be same-merchantDomain. " +
+          "Host-only cross-domain override is not implemented.",
+      );
+    }
     target = named;
   } else {
-    const domain = normalizeMerchantDomain(nextCart.merchantDomain);
     target = locked
       .filter(
         (request) =>
-          normalizeMerchantDomain(request.merchantDomain) === domain,
+          normalizeMerchantDomain(request.merchantDomain) === nextDomain,
       )
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
   }
@@ -411,7 +433,7 @@ export type SpendCreatePlan = {
 
 /**
  * Pure create planner (N-2 / N-5). SpendStore applies this in one transaction.
- * Different-merchant locks are left intact unless `input.supersedes` names them.
+ * Different-merchant locks are left intact. Agent `supersedes` must be same-domain.
  */
 export function planSpendCreate(
   existing: SpendRequest[],
@@ -494,6 +516,11 @@ export function applyDecision(
         "Raw decidedBy or a request-body actor string is not accepted.",
     );
   }
+  if (current.status === "CANCELLED") {
+    throw new SpendError(
+      "This spend was cancelled (Keep looking) and is not a deny. Request a new spend.",
+    );
+  }
   if (current.status !== "PENDING") {
     throw new SpendError(
       `Cannot decide a spend request in status "${current.status}".`,
@@ -523,6 +550,42 @@ export function applyDecision(
     decidedAt: nowIso(at),
     decidedBy: "oob-assertion",
     orderId: opts.orderId ?? current.orderId,
+    updatedAt: nowIso(at),
+  };
+}
+
+/**
+ * Keep looking: close PENDING without the 24h human-deny cooldown.
+ * Status is CANCELLED (not DENIED). A new same-cart request_spend is allowed.
+ */
+export function applyKeepLooking(
+  request: SpendRequest,
+  at = new Date(),
+): SpendRequest {
+  const current = maybeExpire(request, at);
+  if (current.status === "DENIED") {
+    throw new SpendError(
+      "Deny is final for this spend request. Do not retry or re-submit.",
+    );
+  }
+  if (current.status === "EXPIRED") {
+    throw new SpendError("This spend request has expired.");
+  }
+  if (current.status === "CANCELLED") {
+    throw new SpendError(
+      "This spend request was already cancelled (Keep looking).",
+    );
+  }
+  if (current.status !== "PENDING") {
+    throw new SpendError(
+      `Cannot keep-looking a spend request in status "${current.status}".`,
+    );
+  }
+  return {
+    ...current,
+    status: "CANCELLED",
+    decidedAt: nowIso(at),
+    decidedBy: "grokbot-widget",
     updatedAt: nowIso(at),
   };
 }

@@ -17,7 +17,7 @@ Not registered (and must stay that way): `edit_spend_cap`, `report_checkout_outc
 
 ```
 IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
-               ↘ DENIED | EXPIRED
+               ↘ DENIED | EXPIRED | CANCELLED
                ↘ REAUTH_REQUIRED
 ```
 
@@ -31,10 +31,11 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 
 - **`checkoutUrl` is the money path.** Locked to `merchantDomain` at `request_spend`, re-snapshotted at Approve, and the only URL `prepare_checkout_handoff` will return. Host ≠ lock → reject. No `merchantUrl` fallback.
 - Approve **locks the cart**: amount + merchant + domain + checkoutUrl + shipping. OOB token **must bind `lockedCartFingerprint`**.
-- **Local first-test Approve** is `GET /approve` → `POST /host/spend-decision` (HMAC). `approveUrl` is a **bearer capability**: possession of the URL (human, agent, or smoke script) can complete Approve/Deny by fetching/posting it. Acceptable for local first test only. This does **not** prove a human acted. **TODO:** Grokbot/Life Admin human-only widget ([design](docs/design/grokbot-widget-approve.md)); passkey/WebAuthn for public Cursor marketplace.
+- **Grokbot widget Approve** is `POST /host/widget-decision` (`Authorization: Bearer host:<HOST_API_TOKEN>`). The Worker mints+verifies `iss=grokbot-widget` (same claims as OOB, including `lockedCartFingerprint` + `jti`) and calls `applyDecision` only with `assertionVerified: true`. Body `tenantId` / `decidedBy` are not authority. Keep looking → `CANCELLED` (no deny cooldown). Not an MCP tool. SoD depends on Life Admin using this path, not the model fetching `approveUrl`.
+- **Local first-test Approve** is `GET /approve` → `POST /host/spend-decision` (HMAC). `approveUrl` is a **bearer capability**: possession of the URL (human, agent, or smoke script) can complete Approve/Deny by fetching/posting it. Acceptable for local first test only. This does **not** prove a human acted. **TODO:** passkey/WebAuthn for public Cursor marketplace.
 - The agent has **no decide MCP tool**. That is **not** the same as “`approveUrl` is human-proof.”
 - Host decide verifies a signed assertion (`OOB_ASSERTION_CONTRACT` in `src/types.ts`) and calls `applyDecision` only with `assertionVerified: true`. Outcome remains **501**. No `DEV_MODE` Approve switch.
-- `DENIED` and `EXPIRED` are terminal from `PENDING`. Only a **human Deny** starts the 24h retry cooldown. `EXPIRED` (timeout) does not.
+- `DENIED`, `EXPIRED`, and `CANCELLED` are terminal from `PENDING`. Only a **human Deny** starts the 24h retry cooldown. `EXPIRED` (timeout) and `CANCELLED` (Keep looking) do not.
 - If `spendCap` is present, it must be ≥ amount. Cap edits (host-only helper) never grant approval.
 
 ## Trust boundaries
@@ -81,6 +82,8 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 - Missing/bad signature, expiry, fingerprint mismatch, and replayed `jti` are rejected.
 - Missing `props.userId` **fails closed** at the MCP edge: `initialize` / `tools/list` / `tools/call` are 401 and do **not** allocate tenant Durable Objects (no `"anonymous"` ledger).
 - `ALLOW_TEST_AUTH=true` is **impossible or inert** on the production `wrangler.toml` path (`ENVIRONMENT=production`). If the flag is set there, the Worker returns 500 and never honors `Bearer test:…`. Local `.dev.vars` must set `ENVIRONMENT=development`; test auth is then honored only on loopback Host.
+
+**Grokbot widget.** `POST /host/widget-decision` requires `Bearer host:<HOST_API_TOKEN>` (401 if missing/invalid). The Worker still mints+verifies `iss=grokbot-widget` claims and does not skip fingerprint/`jti` checks. SoD depends on Life Admin posting only after a human tap — not on the model fetching `approveUrl`.
 
 **Residual (local first test only).** `approveUrl` is a **bearer capability**. Possession of the URL — including by the agent or the smoke script — can complete Approve/Deny by fetching the page and posting the server-minted assertion. That is acceptable for local first test. It does **not** prove a human acted. **TODO:** passkey/WebAuthn / out-of-band device auth.
 
@@ -139,7 +142,7 @@ A future v1 PAN fetch would need its own PCI program (often SAQ D unless a vault
 **Mitigations**
 
 - Locked cart includes `checkoutUrl`. Handoff refuses a swapped URL or a host ≠ `merchantDomain`.
-- Same-`merchantDomain` mismatch (or explicit `supersedes`) → new `PENDING` with `cartDiff`; that lock **cancelled** (`FAILED` + `supersededBySpendRequestId`). A different merchant’s `APPROVED` / `WAITING_FOR_YOU` lock is left intact.
+- Same-`merchantDomain` mismatch (or explicit same-domain `supersedes`) → new `PENDING` with `cartDiff`; that lock **cancelled** (`FAILED` + `supersededBySpendRequestId`). Agent `supersedes` of another merchant is **rejected**. A different merchant’s lock is left intact.
 
 ### 8. Log / transcript leakage
 

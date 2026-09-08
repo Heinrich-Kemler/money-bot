@@ -16,8 +16,8 @@ Primary product name is **Money Bot** (package/id: `money-bot`).
 
 | Tool | Use |
 | --- | --- |
-| `request_spend` | Create `PENDING`. Requires UK/EU merchant + https `checkoutUrl` on that domain. Returns `approveUrl` (local/non-Grokbot). |
-| `get_spend_status` | Read status + locked cart + `tenantConnection`. Includes `approveUrl` while `PENDING`. |
+| `request_spend` | Create `PENDING`. Requires UK/EU merchant + https `checkoutUrl` on that domain. Returns `widget` (Approve / Reject / Keep looking) and `approveUrl` (local smoke only). |
+| `get_spend_status` | Read status + locked cart + `tenantConnection`. Includes `widget` + `approveUrl` while `PENDING`. |
 | `prepare_checkout_handoff` | After `APPROVED`, return the locked `checkoutUrl` (**the money path**). |
 
 You do **not** have `edit_spend_cap`, `report_checkout_outcome`, `dev_set_spend_decision`, or any decide/approve tool. Do not invent them. **No decide MCP tool ≠ approveUrl is human-proof** — do not fetch or POST `approveUrl` yourself.
@@ -40,12 +40,12 @@ Do **not**:
 
 ```
 IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
-               ↘ DENIED | EXPIRED
+               ↘ DENIED | EXPIRED | CANCELLED
                ↘ REAUTH_REQUIRED
 ```
 
-- `request_spend` → `PENDING`. Locks proposed cart + checkout URL host to merchant domain. Returns `approveUrl`.
-- Human Approve is **out-of-band** (browser page or host widget). You have no decide tool.
+- `request_spend` → `PENDING`. Locks proposed cart + checkout URL host to merchant domain. Returns `widget` (Life Admin) and `approveUrl` (local smoke only).
+- Human Approve is **out-of-band** (host widget or local browser page). You have no decide tool. Do not fetch `approveUrl`.
 - `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Returns `moneyPath: true` and the locked URL only.
 - `get_spend_status` also returns `tenantConnection`.
 - Payment outcome (`PAID` / `FAILED`) is **host/human only**. Do not claim PAID.
@@ -53,11 +53,12 @@ IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
 ## v0 flow
 
 1. Fill the cart, including the merchant **checkout** URL (this is where the human will pay). Finding products is allowed.
-2. `request_spend` → `PENDING` + `approveUrl`.
-3. Ask the human to Approve (open `approveUrl` locally, or wait for the Life Admin card). Do not complete Approve yourself.
+2. `request_spend` → `PENDING` + `widget` + `approveUrl` (local smoke only).
+3. Ask the human to Approve via the Life Admin card (`widget` options). Do not complete Approve yourself. Do not fetch `approveUrl`.
 4. Poll `get_spend_status`:
    - `PENDING` — wait for the human.
    - `DENIED` — stop (cooldown).
+   - `CANCELLED` — Keep looking; you may `request_spend` again (no deny cooldown).
    - `EXPIRED` — you may `request_spend` again for the same cart.
    - `REAUTH_REQUIRED` — tenant re-consent (v1, not built).
    - `APPROVED` — `prepare_checkout_handoff`.

@@ -2,7 +2,7 @@
  * Money Bot spend state machine (internal metaphor: “Spend Gate”).
  *
  *   IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID | CHALLENGE | FAILED
- *                    ↘ DENIED | EXPIRED
+ *                    ↘ DENIED | EXPIRED | CANCELLED
  *                    ↘ REAUTH_REQUIRED  (90-day tenant re-consent; v1 Revolut)
  *
  * IDLE is the empty machine (no active request). It is not persisted.
@@ -18,6 +18,7 @@
  *   completed → PAID
  *   denied → DENIED
  *   expired → EXPIRED
+ *   cancelled → CANCELLED  (Keep looking — no human-deny cooldown)
  *   failed → FAILED
  */
 export const SPEND_STATUSES = [
@@ -30,6 +31,7 @@ export const SPEND_STATUSES = [
   "FAILED",
   "DENIED",
   "EXPIRED",
+  "CANCELLED",
   "REAUTH_REQUIRED",
 ] as const;
 
@@ -41,7 +43,7 @@ export const PERSISTED_SPEND_STATUSES = SPEND_STATUSES.filter(
 
 export type PersistedSpendStatus = Exclude<SpendStatus, "IDLE">;
 
-export const TERMINAL_FROM_PENDING = ["DENIED", "EXPIRED"] as const;
+export const TERMINAL_FROM_PENDING = ["DENIED", "EXPIRED", "CANCELLED"] as const;
 
 export const COMPLETION_FROM_HANDOFF = ["PAID", "CHALLENGE", "FAILED"] as const;
 
@@ -49,6 +51,28 @@ export type CheckoutOutcome = (typeof COMPLETION_FROM_HANDOFF)[number];
 
 export const DECISIONS = ["approved", "denied"] as const;
 export type SpendDecision = (typeof DECISIONS)[number];
+
+/** Host widget body — Keep looking is not a spend Approve/Deny. */
+export const WIDGET_DECISIONS = ["approved", "denied", "keep_looking"] as const;
+export type WidgetDecision = (typeof WIDGET_DECISIONS)[number];
+
+export const WIDGET_OPTIONS = ["Approve", "Reject", "Keep looking"] as const;
+export type WidgetOption = (typeof WIDGET_OPTIONS)[number];
+
+/**
+ * Human-only Grokbot/Life Admin card. The agent must not treat this as a
+ * decide tool, and must not fetch approveUrl to complete Approve.
+ */
+export type GrokbotWidget = {
+  spendRequestId: string;
+  merchantName: string;
+  amount: number;
+  currency: string;
+  merchantDomain: string;
+  checkoutUrl: string;
+  lockedCartFingerprint: string;
+  options: typeof WIDGET_OPTIONS;
+};
 
 /**
  * Per-tenant Revolut Business connection.
@@ -168,9 +192,13 @@ export type RequestSpendResult = {
   lockedCart: LockedCart;
   /**
    * Local smoke / non-Grokbot browser Approve page. Bearer capability — not
-   * human proof. Grokbot uses a host widget; see docs/design/grokbot-widget-approve.md.
+   * human proof. Grokbot uses `widget` + POST /host/widget-decision.
    */
   approveUrl: string;
+  /** Always true: approveUrl is not the Grokbot human-proof path. */
+  approveUrlLocalSmokeOnly: true;
+  /** Human-only Approve / Reject / Keep looking card for Life Admin. */
+  widget: GrokbotWidget;
   supersededSpendRequestId?: string;
   cartDiff?: CartDiff;
 };
@@ -213,10 +241,12 @@ export const AGENT_MCP_TOOLS = [
 /**
  * First testable Approve: local HMAC-signed browser page → POST /host/spend-decision.
  * This is not passkey/WebAuthn. Raw `decidedBy` is never enough.
+ * Local smoke only — Grokbot must use WIDGET_ASSERTION_CONTRACT.
  */
 export const OOB_ASSERTION_CONTRACT = {
   scaffoldOnly: false,
   localHmacOnly: true,
+  localSmokeOnly: true,
   notPasskey: true,
   transport:
     "GET /approve?… then POST /host/spend-decision with Authorization: Bearer <jwt-or-hmac> (or form field assertion=)",
@@ -240,6 +270,46 @@ export const OOB_ASSERTION_CONTRACT = {
     "tenantId from request JSON body",
     "agent tools/call",
     "unsigned JSON body",
+    "DEV_MODE decide switch",
+  ],
+} as const;
+
+/**
+ * Grokbot / Life Admin human-only widget → POST /host/widget-decision.
+ * Not an MCP tool. HOST_API_TOKEN authenticates the host; the Worker then
+ * mints+verifies the same claim set as OOB with iss=grokbot-widget.
+ */
+export const WIDGET_ASSERTION_CONTRACT = {
+  scaffoldOnly: false,
+  notAnMcpTool: true,
+  notPasskey: true,
+  transport:
+    "POST /host/widget-decision with Authorization: Bearer host:<HOST_API_TOKEN>",
+  type: "Host bearer + server-minted HS256 JWT (iss=grokbot-widget) verified before applyDecision",
+  keepLookingDefault:
+    "CANCELLED — closes PENDING without the 24h human-deny cooldown",
+  failClosed:
+    "HOST_API_TOKEN unset or invalid → 401; production must set the secret",
+  requiredClaims: {
+    iss: "grokbot-widget",
+    aud: "money-bot",
+    exp: "unix seconds, short-lived (minutes)",
+    iat: "unix seconds",
+    jti: "unique assertion id (replay protection)",
+    spendRequestId: "sr_…",
+    tenantId:
+      "from the spend record + host-authenticated lookup — never authority from a JSON body field",
+    decision: "approved | denied | keep_looking",
+    lockedCartFingerprint:
+      "MUST equal the stored locked-cart fingerprint (body value is checked, not trusted)",
+  },
+  rejected: [
+    "raw decidedBy string",
+    "tenantId from request JSON body as authority",
+    "agent tools/call",
+    "agent fetching approveUrl",
+    "unsigned JSON body",
+    "HOST_API_TOKEN skipping fingerprint/jti checks",
     "DEV_MODE decide switch",
   ],
 } as const;

@@ -16,6 +16,12 @@ interface Env {
   ALLOW_TEST_AUTH?: string;
   /** HMAC/JWT secret used to mint and verify Approve assertions. Never commit. */
   APPROVAL_HMAC_SECRET?: string;
+  /**
+   * Life Admin / Grokbot host token for POST /host/widget-decision.
+   * Authorization: Bearer host:<HOST_API_TOKEN>
+   * Fail closed if unset. Never expose to the agent.
+   */
+  HOST_API_TOKEN?: string;
   /** Origin for approveUrl (default http://localhost:8787). */
   PUBLIC_BASE_URL?: string;
 }

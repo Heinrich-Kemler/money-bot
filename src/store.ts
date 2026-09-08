@@ -13,7 +13,12 @@ import {
   SpendError,
   supersedeLockedRequest,
 } from "./logic.ts";
-import { assertFingerprintMatch, assertJtiUnused } from "./decision.ts";
+import type { ApprovalClaims } from "./assertion.ts";
+import {
+  assertFingerprintMatch,
+  assertJtiUnused,
+  decideFromVerifiedWidgetClaims,
+} from "./decision.ts";
 import { redactPaymentSecrets } from "./sanitize.ts";
 import type { RequestSpendInput } from "./schemas.ts";
 import type {
@@ -146,6 +151,38 @@ export class SpendStore extends DurableObject<Env> {
       const next = applyDecision(current, decision, {
         assertionVerified: true,
       });
+      await this.putRequest(next);
+      return ok(next);
+    } catch (error) {
+      return fail(error);
+    }
+  }
+
+  /**
+   * Widget path: fingerprint + jti still run even though the caller
+   * authenticated with HOST_API_TOKEN. tenantId comes from verified claims.
+   */
+  async applyVerifiedWidgetDecision(
+    spendRequestId: string,
+    tenantId: string,
+    claims: ApprovalClaims,
+  ): Promise<StoreResult<SpendRequest>> {
+    try {
+      if (
+        claims.tenantId !== tenantId ||
+        claims.spendRequestId !== spendRequestId
+      ) {
+        throw new SpendError("Spend request not found.");
+      }
+      const current = unwrapStore(
+        await this.getForTenant(spendRequestId, tenantId),
+      );
+      assertFingerprintMatch(current, claims.lockedCartFingerprint);
+      const jtiKey = `jti:${claims.jti}`;
+      const used = await this.ctx.storage.get<{ usedAt: string }>(jtiKey);
+      assertJtiUnused(used);
+      await this.ctx.storage.put(jtiKey, { usedAt: new Date().toISOString() });
+      const next = decideFromVerifiedWidgetClaims(current, claims);
       await this.putRequest(next);
       return ok(next);
     } catch (error) {

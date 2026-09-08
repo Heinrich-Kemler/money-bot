@@ -9,6 +9,7 @@ export {
   assertFingerprintMatch,
   assertJtiUnused,
   decideFromVerifiedClaims,
+  decideFromVerifiedWidgetClaims,
 } from "./decision.ts";
 
 function statusForSpendError(error: SpendError): number {
@@ -144,6 +145,13 @@ export async function handleSpendDecision(
       env.APPROVAL_HMAC_SECRET,
       token,
     );
+    if (claims.decision !== "approved" && claims.decision !== "denied") {
+      throw new HostDecisionError(
+        "OOB spend-decision only accepts approved or denied.",
+        400,
+        "bad_decision",
+      );
+    }
     const store = spendStoreForTenant(env, claims.tenantId);
     const result = await store.applyHostDecision(
       claims.spendRequestId,

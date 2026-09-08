@@ -18,8 +18,8 @@ These are the **only** MCP tools registered in production. There is no `DEV_MODE
 
 | Tool | Role |
 | --- | --- |
-| `request_spend` | `IDLE` → `PENDING`. Requires UK/EU merchant + https `checkoutUrl` on that domain. Returns `approveUrl`. |
-| `get_spend_status` | Machine status + locked cart + `tenantConnection`. Includes `approveUrl` while `PENDING`. |
+| `request_spend` | `IDLE` → `PENDING`. Requires UK/EU merchant + https `checkoutUrl` on that domain. Returns `widget` (Approve / Reject / Keep looking) plus `approveUrl` (**local smoke only**). |
+| `get_spend_status` | Machine status + locked cart + `tenantConnection`. Includes `widget` + `approveUrl` while `PENDING`. |
 | `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU`. Returns the locked `checkoutUrl` (**the money path**). |
 
 There is **no** `edit_spend_cap`, `report_checkout_outcome`, or `dev_set_spend_decision` tool.
@@ -52,11 +52,22 @@ This is a **browser page** that posts a **server-minted** HS256 JWT / HMAC asser
 
 7. **Deny** uses the same page / assertion path.
 
-Or run the smoke (wrangler already up):
+Or run the **local** `approveUrl` smoke (wrangler already up):
 
 ```bash
 ./scripts/smoke-approve.sh
 ```
+
+### Grokbot / Life Admin widget (human-only)
+
+Grokbot SoD depends on Life Admin rendering `widget` and posting `POST /host/widget-decision` with `HOST_API_TOKEN` — **not** the model fetching `approveUrl`. See [docs/design/grokbot-widget-approve.md](docs/design/grokbot-widget-approve.md).
+
+```bash
+# .dev.vars must include HOST_API_TOKEN (see .dev.vars.example)
+./scripts/smoke-widget-approve.sh
+```
+
+`Authorization: Bearer host:<HOST_API_TOKEN>`. Body `{ spendRequestId, decision: "approved"|"denied"|"keep_looking", lockedCartFingerprint }`. Tenant from `X-Money-Bot-Tenant` (lookup only). Worker mints+verifies `iss=grokbot-widget` before `applyDecision`. Keep looking → `CANCELLED` (no 24h deny cooldown). Missing token → 401. Not an MCP tool.
 
 `POST /host/checkout-outcome` stays **501**. No Revolut, no PAN, no marketplace, no real card charge.
 
@@ -66,7 +77,7 @@ Or run the smoke (wrangler already up):
 IDLE → PENDING → APPROVED → WAITING_FOR_YOU → PAID
                                               → CHALLENGE → PAID | FAILED
                                               → FAILED
-               ↘ DENIED | EXPIRED
+               ↘ DENIED | EXPIRED | CANCELLED
                ↘ REAUTH_REQUIRED   (planned v1 tenant re-consent)
 ```
 
@@ -79,17 +90,19 @@ NOT_CONNECTED → CONNECTED → REAUTH_REQUIRED → CONNECTED
 | Path | Transition |
 | --- | --- |
 | (no request) | `IDLE` |
-| `request_spend` | `IDLE` → `PENDING` + `approveUrl` |
-| **Signed OOB** Approve (`GET /approve` → `POST /host/spend-decision`) | `PENDING` → `APPROVED` — re-snapshots amount + merchant + domain + **checkoutUrl** + shipping. Token **must bind `lockedCartFingerprint`**. Raw `decidedBy` is rejected. `tenantId` is never taken from a request body. |
-| Human Deny (same signed assertion) | `PENDING` → `DENIED` (terminal; 24h same-domain cooldown) |
+| `request_spend` | `IDLE` → `PENDING` + `widget` + `approveUrl` (local smoke only) |
+| **Grokbot widget** (`POST /host/widget-decision`) | Human tap → `APPROVED` / `DENIED` / `CANCELLED`. Server-minted `iss=grokbot-widget` assertion (`lockedCartFingerprint` + `jti`). Body `tenantId` / `decidedBy` are not authority. |
+| **Signed OOB** Approve (`GET /approve` → `POST /host/spend-decision`) | Local smoke: `PENDING` → `APPROVED`. Bearer `approveUrl`, not human proof. |
+| Human Deny (widget Reject or OOB Deny) | `PENDING` → `DENIED` (terminal; 24h same-domain cooldown) |
+| Keep looking (widget) | `PENDING` → `CANCELLED` (terminal; **no** deny cooldown) |
 | Pending TTL | `PENDING` → `EXPIRED` (terminal; **no** human-deny cooldown — a new same-cart request is allowed) |
 | `prepare_checkout_handoff` | `APPROVED` → `WAITING_FOR_YOU` — opens **only** the locked https `checkoutUrl` (host = `merchantDomain`) |
 | `get_spend_status` | Full status + `tenantConnection` |
 | Host/OOB checkout outcome — **not an agent tool, HTTP 501** | `WAITING_FOR_YOU` → `PAID` / `CHALLENGE` / `FAILED` |
 
-Tool results return `approveUrl` so a human *or* a local smoke client can finish Approve. That URL is a bearer capability, not human proof. **No decide MCP tool ≠ approveUrl is human-proof.** Grokbot/Life Admin should use a human-only host widget ([design note](docs/design/grokbot-widget-approve.md)); that path must not rely on the agent fetching `approveUrl`.
+Tool results return a `widget` for Life Admin and `approveUrl` for local smoke. That URL is a bearer capability, not human proof. **No decide MCP tool ≠ approveUrl is human-proof.** Grokbot SoD depends on the widget + `HOST_API_TOKEN` path ([implemented design](docs/design/grokbot-widget-approve.md)).
 
-`checkoutUrl` is the **money path**. It is locked to `merchantDomain` at request time, re-validated at Approve, and the only URL handoff will open. Never fall back to `merchantUrl`. A **same-merchant** cart mismatch (or explicit `supersedes`) opens a **new PENDING** and **cancels** that shop’s previous lock (`FAILED` + `supersededBySpendRequestId`). A request at a **different** merchant leaves the other shop’s `APPROVED` / `WAITING_FOR_YOU` lock intact.
+`checkoutUrl` is the **money path**. It is locked to `merchantDomain` at request time, re-validated at Approve, and the only URL handoff will open. Never fall back to `merchantUrl`. A **same-merchant** cart mismatch (or explicit same-domain `supersedes`) opens a **new PENDING** and **cancels** that shop’s previous lock (`FAILED` + `supersededBySpendRequestId`). Agent `supersedes` of a **different** merchant is **rejected**. A request at a different merchant without `supersedes` leaves the other shop’s lock intact.
 
 Human **Deny** retries match merchant domain (www-normalized) + currency + amount within £/€0.50 for 24h, plus cart fingerprint and lineage. **`EXPIRED` (timeout) does not** start that cooldown.
 
@@ -104,7 +117,7 @@ If a `spendCap` is set, it must be **≥ amount**.
 | Who pays | Human, on the merchant’s own checkout page | Planned: human-approved virtual card from **their** Revolut Business — never a pooled float |
 | Revolut | Not connected | Planned wizard (cert + `client_id` + JWT + Enable access). **No public OAuth.** Token ~40m; **~90-day re-consent** |
 | What the agent sees | Spend id, amount, merchant, locked checkout URL, `approveUrl`, state | Same — never PAN/CVC/expiry |
-| Approve | Local HMAC `approveUrl` (bearer capability; not human proof) | **TODO** phone passkey / WebAuthn |
+| Approve | Grokbot widget (`POST /host/widget-decision`) + local HMAC `approveUrl` (bearer; smoke only) | **TODO** phone passkey / WebAuthn |
 | Card data | v0 does not fetch or store PAN. That is a **design goal**, not a QSA “out of CDE” certification. | Any future PAN fetch would need a PCI program (likely SAQ D unless a vault/iframe). Not assessed. |
 
 Money Bot does not implement Apple Pay, Revolut Pay, or 3-D Secure. Those, if they appear, are the **merchant page’s** UI after the human opens the locked URL.
@@ -120,8 +133,8 @@ Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must
 ## v0 agent flow
 
 1. Fill the merchant cart (amount, merchant URL/domain, shipping, **checkout URL**).
-2. `request_spend` → `{ status: "PENDING", spendRequestId, lockedCart, approveUrl, … }`.
-3. Give the human `approveUrl` (intended **local** browser path) or wait for the Life Admin widget. Treat `approveUrl` as a bearer capability: fetching/posting it completes Approve/Deny. **No decide MCP tool ≠ approveUrl is human-proof.**
+2. `request_spend` → `{ status: "PENDING", spendRequestId, lockedCart, widget, approveUrl, … }`.
+3. Life Admin: show `widget` (Approve / Reject / Keep looking). Local: give the human `approveUrl`. The agent must not fetch `approveUrl`. **No decide MCP tool ≠ approveUrl is human-proof.**
 4. `get_spend_status` until `APPROVED`, `DENIED`, `EXPIRED`, or `REAUTH_REQUIRED`.
 5. `prepare_checkout_handoff` → `WAITING_FOR_YOU`. Hand the human the locked `checkoutUrl` only. Never show a raw PAN. Do **not** mark `PAID`.
 
@@ -129,11 +142,11 @@ Cursor **2.6+** can render an **MCP Apps** sandboxed iframe card. Money Bot must
 
 See [SECURITY.md](SECURITY.md):
 
-1. `AUTO_APPROVE_MAX = 0`. No decide MCP tool. Local `approveUrl` is a bearer capability (not human proof; Grokbot widget + passkey/WebAuthn remain TODO).
-2. `POST /host/spend-decision` verifies a signed JWT/HMAC (`iss`, `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, `lockedCartFingerprint`) and calls `applyDecision` only with `assertionVerified: true`.
+1. `AUTO_APPROVE_MAX = 0`. No decide MCP tool. Local `approveUrl` is a bearer capability (not human proof). Grokbot uses `POST /host/widget-decision` + `HOST_API_TOKEN`. Passkey/WebAuthn remains TODO.
+2. `POST /host/widget-decision` and `POST /host/spend-decision` verify a signed JWT/HMAC (`iss` = `grokbot-widget` or `money-bot-oob`, plus `aud`, `exp`, `iat`, `jti`, `spendRequestId`, `tenantId`, `decision`, `lockedCartFingerprint`) and call `applyDecision` only with `assertionVerified: true`. `HOST_API_TOKEN` does not skip fingerprint/`jti` checks.
 3. Never put PAN/CVC/expiry in chat, memory, transcripts, or tool results.
 4. No public Revolut OAuth. No pooled funds.
-5. Human Deny is terminal and has a 24h cooldown. `EXPIRED` is terminal but does **not** share that cooldown.
+5. Human Deny is terminal and has a 24h cooldown. `EXPIRED` and `CANCELLED` (Keep looking) do **not** share that cooldown.
 6. Observability invocation logs / traces are **off** so request bodies are not shipped to Workers Logs.
 7. Production MCP without `props.userId` fails closed at the edge (no tenant DO). `ALLOW_TEST_AUTH` is impossible/inert on the production `wrangler.toml` path.
 
@@ -146,6 +159,7 @@ docs/open-questions.md
 docs/design/grokbot-widget-approve.md
 src/   # request_spend, get_spend_status, prepare_checkout_handoff
 scripts/smoke-approve.sh
+scripts/smoke-widget-approve.sh
 skills/money-bot/SKILL.md
 plugin/
 ```
@@ -158,10 +172,11 @@ cp .dev.vars.example .dev.vars
 npm run type-check
 npm test
 npm start                        # wrangler dev — MCP at http://localhost:8787/mcp
-./scripts/smoke-approve.sh       # optional e2e (server already running)
+./scripts/smoke-approve.sh       # optional e2e approveUrl (server already running)
+./scripts/smoke-widget-approve.sh  # host widget path (no approveUrl)
 ```
 
-There is no `DEV_MODE` Approve switch. Local Approve is the HMAC-signed `/approve` page only.
+There is no `DEV_MODE` Approve switch. Local Approve is the HMAC-signed `/approve` page or `POST /host/widget-decision`.
 
 ## Disclaimer
 
