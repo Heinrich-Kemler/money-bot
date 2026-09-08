@@ -73,18 +73,19 @@ async function mcp(method, params, sessionId, id = 1) {
 }
 
 function toolPayload(result) {
-  const text = result?.result?.content?.[0]?.text;
+  const payload = result.json ?? result;
+  const text = payload?.result?.content?.[0]?.text;
   if (!text) {
     fail(`Tool result missing text: ${JSON.stringify(result, null, 2)}`);
   }
-  if (result.result.isError) {
+  if (payload.result.isError) {
     fail(`Tool error: ${text}`);
   }
   return JSON.parse(text);
 }
 
 async function main() {
-  const shop = `smoke-${Date.now()}.example.co.uk`;
+  const shop = `smoke-${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}.example.co.uk`;
   const checkoutUrl = `https://${shop}/checkout`;
 
   const init = await mcp("initialize", {
