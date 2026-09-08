@@ -166,7 +166,10 @@ export type RequestSpendResult = {
   currency: string;
   createdAt: string;
   lockedCart: LockedCart;
-  /** Browser Approve page. Agent must present this — never complete Approve. */
+  /**
+   * Local smoke / non-Grokbot browser Approve page. Bearer capability — not
+   * human proof. Grokbot uses a host widget; see docs/design/grokbot-widget-approve.md.
+   */
   approveUrl: string;
   supersededSpendRequestId?: string;
   cartDiff?: CartDiff;

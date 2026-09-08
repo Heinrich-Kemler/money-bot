@@ -275,14 +275,13 @@ export function isRetryOfDenied(
   const candidateDomain = normalizeMerchantDomain(candidate.merchantDomain);
 
   return existing.find((request) => {
-    if (request.status !== "DENIED" && request.status !== "EXPIRED") {
+    // N-5: only a human DENIED starts the 24h cooldown. EXPIRED (TTL) does not.
+    if (request.status !== "DENIED") {
       return false;
     }
     const decided = request.decidedAt
       ? Date.parse(request.decidedAt)
-      : request.status === "EXPIRED"
-        ? Date.parse(request.expiresAt)
-        : Date.parse(request.updatedAt);
+      : Date.parse(request.updatedAt);
     if (at.getTime() - decided > windowMs) {
       return false;
     }
@@ -327,27 +326,134 @@ export function supersedeLockedRequest(
   };
 }
 
-const LOCKED_STATUSES: SpendStatus[] = [
+export const LOCKED_STATUSES: SpendStatus[] = [
   "APPROVED",
   "WAITING_FOR_YOU",
   "CHALLENGE",
 ];
 
+export function isLockedStatus(status: SpendStatus): boolean {
+  return (LOCKED_STATUSES as readonly SpendStatus[]).includes(status);
+}
+
+/** Same-merchant locked spend whose cart already matches — do not create another. */
+export function findSameLockedCart(
+  existing: SpendRequest[],
+  nextCart: LockedCart,
+): SpendRequest | undefined {
+  const domain = normalizeMerchantDomain(nextCart.merchantDomain);
+  return existing.find((request) => {
+    if (!isLockedStatus(request.status)) {
+      return false;
+    }
+    if (normalizeMerchantDomain(request.merchantDomain) !== domain) {
+      return false;
+    }
+    return diffLockedCart(request.lockedCart, nextCart) === undefined;
+  });
+}
+
+/**
+ * N-2: only a same-merchantDomain lock (or an explicit `supersedes` id) can be
+ * cancelled. A new request at shop B must never FAIL shop A's APPROVED lock.
+ */
 export function findLockedCartMismatch(
   existing: SpendRequest[],
   nextCart: LockedCart,
+  explicitSupersedesId?: string,
 ): { request: SpendRequest; diff: CartDiff } | undefined {
-  const locked = existing
-    .filter((request) => LOCKED_STATUSES.includes(request.status))
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
-  if (!locked) {
+  const locked = existing.filter((request) => isLockedStatus(request.status));
+  let target: SpendRequest | undefined;
+
+  if (explicitSupersedesId) {
+    const named = existing.find(
+      (request) => request.spendRequestId === explicitSupersedesId,
+    );
+    if (!named) {
+      throw new SpendError(
+        `supersedes ${explicitSupersedesId} was not found.`,
+      );
+    }
+    if (!isLockedStatus(named.status)) {
+      throw new SpendError(
+        `supersedes ${explicitSupersedesId} is ${named.status}, not a locked spend.`,
+      );
+    }
+    target = named;
+  } else {
+    const domain = normalizeMerchantDomain(nextCart.merchantDomain);
+    target = locked
+      .filter(
+        (request) =>
+          normalizeMerchantDomain(request.merchantDomain) === domain,
+      )
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+  }
+
+  if (!target) {
     return undefined;
   }
-  const diff = diffLockedCart(locked.lockedCart, nextCart);
+  const diff = diffLockedCart(target.lockedCart, nextCart);
   if (!diff) {
     return undefined;
   }
-  return { request: locked, diff };
+  return { request: target, diff };
+}
+
+export type SpendCreatePlan = {
+  extras: {
+    supersededSpendRequestId?: string;
+    cartDiff?: CartDiff;
+    lineageSpendRequestIds?: string[];
+  };
+  cancel?: SpendRequest;
+};
+
+/**
+ * Pure create planner (N-2 / N-5). SpendStore applies this in one transaction.
+ * Different-merchant locks are left intact unless `input.supersedes` names them.
+ */
+export function planSpendCreate(
+  existing: SpendRequest[],
+  input: RequestSpendInput,
+): SpendCreatePlan {
+  const nextCart = cartFromInput(input);
+  const retry = isRetryOfDenied(existing, {
+    merchantDomain: nextCart.merchantDomain,
+    amount: input.amount,
+    currency: input.currency,
+    lockedCart: nextCart,
+    supersededSpendRequestId: input.supersedes,
+  });
+  if (retry) {
+    throw new SpendError(
+      `Deny is final for ${retry.spendRequestId}. Do not retry the same merchant domain, currency, or nearby amount.`,
+    );
+  }
+
+  const sameLock = findSameLockedCart(existing, nextCart);
+  if (sameLock) {
+    throw new SpendError(
+      `Cart already locked on ${sameLock.spendRequestId} (${sameLock.status}). ` +
+        "Use prepare_checkout_handoff. There is no decide MCP tool.",
+    );
+  }
+
+  const mismatch = findLockedCartMismatch(
+    existing,
+    nextCart,
+    input.supersedes,
+  );
+  const extras: SpendCreatePlan["extras"] = {};
+  if (mismatch) {
+    extras.supersededSpendRequestId = mismatch.request.spendRequestId;
+    extras.cartDiff = mismatch.diff;
+    extras.lineageSpendRequestIds = [
+      ...(mismatch.request.lineageSpendRequestIds ?? []),
+      mismatch.request.spendRequestId,
+    ];
+  }
+  return { extras, cancel: mismatch?.request };
 }
 
 export function applyDecision(
@@ -377,7 +483,9 @@ export function applyDecision(
   }
   if (opts.decidedBy === "agent") {
     throw new SpendError(
-      "The agent cannot Approve. Approval must be out-of-band (phone passkey/PWA). A chat button may only initiate that flow.",
+      "The agent cannot Approve via decidedBy or a decide MCP tool. " +
+        "Approval requires a verified host assertion (human widget or local HMAC page). " +
+        "approveUrl possession is not human proof.",
     );
   }
   if (!opts.assertionVerified) {

@@ -21,9 +21,12 @@ enabled = false
 # Secrets (APPROVAL_HMAC_SECRET, future Revolut wizard creds) MUST be set via
 # `wrangler secret` / .dev.vars — never commit them here.
 # DEV_MODE does not exist: flipping a boolean must never enable Approve.
-# ALLOW_TEST_AUTH must stay unset here (default false). Local-only in .dev.vars.
+# ALLOW_TEST_AUTH must stay unset here. If it is set while ENVIRONMENT is
+# production, the Worker refuses to serve (N-3). wrangler dev overrides
+# ENVIRONMENT via .dev.vars (development) and may set ALLOW_TEST_AUTH there.
 [vars]
 AUTO_APPROVE_MAX = "0"
+ENVIRONMENT = "production"
 
 [[durable_objects.bindings]]
 name = "MCP_OBJECT"

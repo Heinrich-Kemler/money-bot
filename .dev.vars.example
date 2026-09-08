@@ -4,8 +4,13 @@
 
 AUTO_APPROVE_MAX=0
 
+# Required for ALLOW_TEST_AUTH. wrangler.toml defaults ENVIRONMENT=production;
+# without this override, ALLOW_TEST_AUTH=true is a hard Worker failure (N-3).
+ENVIRONMENT=development
+
 # Local-only MCP identity. Production wrangler.toml must leave this unset.
 # When true, send: Authorization: Bearer test:<userId>
+# Honored only on localhost / 127.0.0.1 with ENVIRONMENT=development.
 ALLOW_TEST_AUTH=true
 
 # Used to mint/verify Approve JWTs (HS256) and compact HMAC assertions.

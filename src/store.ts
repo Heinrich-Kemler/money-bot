@@ -1,14 +1,13 @@
 import { DurableObject } from "cloudflare:workers";
+import { tenantDurableObjectName } from "./auth.ts";
 import {
   applyDecision,
   applyTenantReauth,
   assertSameTenant,
-  cartFromInput,
   createPendingSpendRequest,
   defaultTenantConnection,
-  findLockedCartMismatch,
-  isRetryOfDenied,
   maybeExpire,
+  planSpendCreate,
   prepareHandoff,
   refreshTenantConnection,
   SpendError,
@@ -68,47 +67,11 @@ export class SpendStore extends DurableObject<Env> {
   ): Promise<StoreResult<SpendRequest>> {
     try {
       const existing = await this.listAll();
-      const nextCart = cartFromInput(input);
-      const retry = isRetryOfDenied(existing, {
-        merchantDomain: nextCart.merchantDomain,
-        amount: input.amount,
-        currency: input.currency,
-        lockedCart: nextCart,
-      });
-      if (retry) {
-        throw new SpendError(
-          `Deny is final for ${retry.spendRequestId}. Do not retry the same merchant domain, currency, or nearby amount.`,
-        );
-      }
-
-      const sameLock = existing.find(
-        (record) =>
-          (record.status === "APPROVED" ||
-            record.status === "WAITING_FOR_YOU" ||
-            record.status === "CHALLENGE") &&
-          !findLockedCartMismatch([record], nextCart),
-      );
-      if (sameLock) {
-        throw new SpendError(
-          `Cart already locked on ${sameLock.spendRequestId} (${sameLock.status}). ` +
-            "Use prepare_checkout_handoff. The agent cannot self-approve.",
-        );
-      }
-      const mismatch = findLockedCartMismatch(existing, nextCart);
-      const lineage = mismatch
-        ? [
-            ...(mismatch.request.lineageSpendRequestIds ?? []),
-            mismatch.request.spendRequestId,
-          ]
-        : undefined;
-      const request = createPendingSpendRequest(input, tenantId, {
-        supersededSpendRequestId: mismatch?.request.spendRequestId,
-        cartDiff: mismatch?.diff,
-        lineageSpendRequestIds: lineage,
-      });
-      if (mismatch) {
+      const plan = planSpendCreate(existing, input);
+      const request = createPendingSpendRequest(input, tenantId, plan.extras);
+      if (plan.cancel) {
         const cancelled = supersedeLockedRequest(
-          mismatch.request,
+          plan.cancel,
           request.spendRequestId,
         );
         await this.putRequest(cancelled);
@@ -217,15 +180,12 @@ export class SpendStore extends DurableObject<Env> {
   }
 }
 
+export { tenantDurableObjectName };
+
 export function spendStoreForTenant(
   env: Env,
   tenantId: string,
 ): DurableObjectStub<SpendStore> {
-  if (!tenantId || tenantId === "anonymous") {
-    throw new SpendError(
-      "Unauthenticated: tenant userId is required. Refusing a shared anonymous ledger.",
-    );
-  }
-  const id = env.SPEND_STORE.idFromName(`tenant:${tenantId}`);
+  const id = env.SPEND_STORE.idFromName(tenantDurableObjectName(tenantId));
   return env.SPEND_STORE.get(id);
 }

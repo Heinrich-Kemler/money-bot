@@ -1,9 +1,11 @@
 import { handleApprovePage } from "./approve-page.ts";
 import { handleSpendDecision } from "./host-decision.ts";
+import { gateMcpFetch } from "./mcp-auth.ts";
 import { MoneyBotMCP } from "./mcp.ts";
 import { SpendStore } from "./store.ts";
-import { attachTestAuthProps } from "./test-auth.ts";
+import { assertTestAuthAllowedForEnv } from "./test-auth.ts";
 import { AGENT_MCP_TOOLS, OOB_ASSERTION_CONTRACT } from "./types.ts";
+import { TestAuthConfigError } from "./errors.ts";
 
 export { MoneyBotMCP, SpendStore };
 
@@ -25,13 +27,32 @@ export default {
   ): Promise<Response> {
     const url = new URL(request.url);
 
+    try {
+      assertTestAuthAllowedForEnv(env);
+    } catch (error) {
+      const message =
+        error instanceof TestAuthConfigError
+          ? error.message
+          : "ALLOW_TEST_AUTH is forbidden on the production deploy path.";
+      return json(
+        { error: "allow_test_auth_forbidden_in_production", message },
+        500,
+      );
+    }
+
     if (url.pathname === "/mcp" || url.pathname.startsWith("/mcp/")) {
-      attachTestAuthProps(request, env, ctx);
+      const gated = gateMcpFetch(request, env, ctx);
+      if (!gated.ok) {
+        return gated.response;
+      }
       return mcpHandler.fetch(request, env, ctx);
     }
 
     if (url.pathname === "/sse" || url.pathname.startsWith("/sse/")) {
-      attachTestAuthProps(request, env, ctx);
+      const gated = gateMcpFetch(request, env, ctx);
+      if (!gated.ok) {
+        return gated.response;
+      }
       return sseHandler.fetch(request, env, ctx);
     }
 
