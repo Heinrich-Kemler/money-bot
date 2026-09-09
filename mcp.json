@@ -1,7 +1,10 @@
 {
   "mcpServers": {
     "money-bot": {
-      "url": "${MONEY_BOT_MCP_URL}"
+      "url": "${MONEY_BOT_MCP_URL}",
+      "headers": {
+        "Authorization": "${MONEY_BOT_MCP_AUTH}"
+      }
     }
   }
 }

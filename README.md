@@ -178,6 +178,8 @@ npm start                        # wrangler dev — MCP at http://localhost:8787
 
 There is no `DEV_MODE` Approve switch. Local Approve is the HMAC-signed `/approve` page or `POST /host/widget-decision`.
 
+First real purchase through the Cursor plugin (local Worker, your own card on the merchant page): see [docs/prototype-test-runbook.md](docs/prototype-test-runbook.md). The plugin's `mcp.json` now needs `MONEY_BOT_MCP_AUTH` (the `Authorization` header value) as well as `MONEY_BOT_MCP_URL`.
+
 ## Disclaimer
 
 Money Bot is a scaffold. It does not hold funds, issue cards, or provide regulated payment services. Obtain local regulatory advice before any production or v1 work. Mention of FCA / KNF is a reminder to seek advice — not a claim that this software is authorised or assessed.
