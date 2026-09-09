@@ -21,9 +21,17 @@
       "MONEY_BOT_MCP_URL": {
         "type": "string",
         "title": "Money Bot MCP URL",
-        "description": "Deployed Worker URL ending in /mcp (for example https://money-bot.<account>.workers.dev/mcp). No secrets."
+        "description": "Money Bot MCP endpoint ending in /mcp. Local prototype: http://localhost:8787/mcp (wrangler dev). Deployed: https://money-bot.<account>.workers.dev/mcp. No secrets."
+      },
+      "MONEY_BOT_MCP_AUTH": {
+        "type": "string",
+        "title": "Money Bot Authorization header",
+        "description": "Full Authorization header value sent to the MCP endpoint. Local prototype (ALLOW_TEST_AUTH=true, ENVIRONMENT=development in .dev.vars): 'Bearer test:<your-user-id>'. Production identity is not implemented yet (issue #4); without this header every tool call is rejected with 401."
       }
     },
-    "required": ["MONEY_BOT_MCP_URL"]
+    "required": [
+      "MONEY_BOT_MCP_URL",
+      "MONEY_BOT_MCP_AUTH"
+    ]
   }
 }
